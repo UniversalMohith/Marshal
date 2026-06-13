@@ -1,0 +1,12 @@
+# Microsoft Foundry Agent Service (new projects API, 2.x line)
+azure-ai-projects>=2.0.0
+azure-identity>=1.19
+openai>=1.0
+python-dotenv>=1.0
+
+# Live UI / API (used in the UI phase)
+fastapi>=0.111
+uvicorn[standard]>=0.30
+
+# Nicer CLI output for the headless demo
+rich>=13.7
