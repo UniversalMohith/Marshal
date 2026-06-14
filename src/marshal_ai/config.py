@@ -17,6 +17,15 @@ except ImportError:
     # so the budget governor stays unit-testable with no dependencies installed.
     pass
 
+# Local-dev convenience (Windows): a long-lived server started before the Azure
+# CLI was installed can carry a stale PATH, so DefaultAzureCredential can't find
+# `az` and auth fails. Ensure the standard install dir is on PATH. Harmless on
+# other OSes, and irrelevant in production (Azure hosting uses managed identity).
+if os.name == "nt":
+    _az_dir = r"C:\Program Files\Microsoft SDKs\Azure\CLI2\wbin"
+    if os.path.isdir(_az_dir) and _az_dir not in os.environ.get("PATH", ""):
+        os.environ["PATH"] = _az_dir + os.pathsep + os.environ.get("PATH", "")
+
 
 @dataclass(frozen=True)
 class ModelPricing:
@@ -40,6 +49,8 @@ class ModelPricing:
 
 # Approximate pricing, clearly marked as estimates. Keyed by model deployment name.
 PRICING: dict[str, ModelPricing] = {
+    "gpt-5.4-mini": ModelPricing(0.25, 2.00),
+    "gpt-5.4-nano": ModelPricing(0.10, 0.80),
     "gpt-5.1-mini": ModelPricing(0.25, 2.00),
     "gpt-5-mini": ModelPricing(0.25, 2.00),
     "gpt-4.1-mini": ModelPricing(0.40, 1.60),
@@ -57,11 +68,15 @@ class Settings:
     # Foundry connection.
     project_endpoint: str = os.getenv("PROJECT_ENDPOINT", "")
 
+    # Foundry IQ grounding (Azure AI Search knowledge base). Both must be set to activate.
+    search_endpoint: str = os.getenv("SEARCH_ENDPOINT", "")
+    knowledge_base: str = os.getenv("KNOWLEDGE_BASE", "")
+
     # Model roles (deployment names in your Foundry project).
-    orchestrator_model: str = os.getenv("ORCHESTRATOR_MODEL", "gpt-5.1-mini")
-    worker_model: str = os.getenv("WORKER_MODEL", "gpt-5.1-mini")
-    critic_model: str = os.getenv("CRITIC_MODEL", "gpt-5.1-mini")
-    synthesiser_model: str = os.getenv("SYNTHESISER_MODEL", "gpt-5.1-mini")
+    orchestrator_model: str = os.getenv("ORCHESTRATOR_MODEL", "gpt-5.4-mini")
+    worker_model: str = os.getenv("WORKER_MODEL", "gpt-5.4-mini")
+    critic_model: str = os.getenv("CRITIC_MODEL", "gpt-5.4-mini")
+    synthesiser_model: str = os.getenv("SYNTHESISER_MODEL", "gpt-5.4-mini")
 
     # Budget governor, per question.
     budget_usd: float = float(os.getenv("BUDGET_USD", "0.50"))

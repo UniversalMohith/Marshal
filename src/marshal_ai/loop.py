@@ -7,12 +7,13 @@ from __future__ import annotations
 
 import json
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Callable
 
 from . import agents
 from .budget import BudgetGovernor
 from .config import settings
+from .grounding import Grounding, NullGrounding
 
 Emit = Callable[[dict], None]
 
@@ -31,6 +32,7 @@ class SubResult:
     confidence: str = ""            # high | medium | low
     rescope: str = ""               # critic's note on how to sharpen, if weak
     redo_count: int = 0
+    citations: list = field(default_factory=list)   # grounding sources used, if any
 
 
 # -- small, honest helpers (no token cost) ---------------------------------
@@ -75,9 +77,10 @@ def guardrail(question: str) -> str | None:
 class Marshal:
     """Drives the orchestrator, workers, critic and synthesiser through one question."""
 
-    def __init__(self, foundry, emit: Emit = _noop):
+    def __init__(self, foundry, emit: Emit = _noop, grounding: Grounding | None = None):
         self.foundry = foundry
         self.emit = emit
+        self.grounding = grounding or NullGrounding()
         self.names = agents.ensure_agents(foundry)
 
     def answer(self, question: str, budget_usd: float | None = None) -> dict:
@@ -151,7 +154,23 @@ class Marshal:
 
         def run_one(r: SubResult) -> None:
             self.emit({"type": "worker_start", "id": r.id, "title": r.title})
-            reply = self.foundry.ask(self.names["worker"], r.prompt)
+            prompt = r.prompt
+            if self.grounding.enabled:
+                try:
+                    passages = self.grounding.retrieve(r.prompt)
+                except Exception:
+                    passages = []  # a grounding failure degrades to ungrounded, never blanks the worker
+                if passages:
+                    block = "\n\n".join(f"[{i+1}] ({p.source}) {p.text}" for i, p in enumerate(passages))
+                    prompt = (
+                        f"KNOWLEDGE (retrieved from {self.grounding.label}; cite as [n] where you use it):\n"
+                        f"{block}\n\n---\n\n{r.prompt}"
+                    )
+                    r.citations = [
+                        {"source": p.source, "score": p.score, "text": p.text[:280]} for p in passages
+                    ]
+                    self.emit({"type": "grounded", "id": r.id, "label": self.grounding.label, "sources": r.citations})
+            reply = self.foundry.ask(self.names["worker"], prompt)
             gov.record("worker", settings.worker_model, reply.input_tokens, reply.output_tokens)
             r.answer = reply.text
             r.confidence = _confidence_of(reply.text)

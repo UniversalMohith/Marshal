@@ -18,8 +18,9 @@ node_modules/
 dist/
 .vite/
 
-# OS / editor
+# OS / editor / tooling (machine-specific local config)
 .DS_Store
 Thumbs.db
 .vscode/
 .idea/
+.claude/

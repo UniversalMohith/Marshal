@@ -4,6 +4,11 @@ azure-identity>=1.19
 openai>=1.0
 python-dotenv>=1.0
 
+# Foundry IQ grounding (Azure AI Search knowledge bases / agentic retrieval).
+# Knowledge bases need the PREVIEW package: pip install --pre azure-search-documents
+# Optional — Marshal degrades to local grounding if it is not installed.
+azure-search-documents>=11.6.0
+
 # Live UI / API (used in the UI phase)
 fastapi>=0.111
 uvicorn[standard]>=0.30
