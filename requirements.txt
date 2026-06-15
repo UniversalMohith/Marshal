@@ -13,5 +13,10 @@ azure-search-documents>=11.6.0
 fastapi>=0.111
 uvicorn[standard]>=0.30
 
+# MCP (Model Context Protocol) client — connect external tool servers so Marshal's
+# agents can call their tools. Optional: the MCP Settings panel degrades gracefully
+# if it is not installed (you get a clear error when adding a server).
+mcp>=1.27
+
 # Nicer CLI output for the headless demo
 rich>=13.7
