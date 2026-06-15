@@ -92,6 +92,9 @@ class Settings:
     subagents_enabled: bool = os.getenv("SUBAGENTS_ENABLED", "1") not in ("0", "false", "False", "")
     ai_can_spawn_subagents: bool = os.getenv("AI_CAN_SPAWN_SUBAGENTS", "0") in ("1", "true", "True")
 
+    # MCP tools (opt-in: when on, chat may call connected MCP tool servers).
+    mcp_tools_enabled: bool = os.getenv("MCP_TOOLS_ENABLED", "0") in ("1", "true", "True")
+
     # Cumulative USD spent across ALL runs, accumulated by the server after each
     # run. Not from env; loaded from .marshal.json on startup (apply_runtime_config).
     total_spend_usd: float = 0.0
@@ -119,13 +122,15 @@ _CONFIG_PATH = pathlib.Path(__file__).resolve().parents[2] / ".marshal.json"
 _RUNTIME_KEYS = (
     "project_endpoint", "orchestrator_model", "worker_model", "critic_model",
     "synthesiser_model", "search_endpoint", "knowledge_base",
-    # Settings: budget + model source + subagents.
+    # Settings: budget + model source + subagents + MCP.
     "budget_usd", "model_source", "subagents_enabled", "ai_can_spawn_subagents",
+    "mcp_tools_enabled",
     "total_spend_usd", "total_runs",
 )
 
 # Keys whose value may legitimately be falsy (0, 0.0, False) and must still be applied.
 _RUNTIME_FALSY_OK = ("budget_usd", "subagents_enabled", "ai_can_spawn_subagents",
+                     "mcp_tools_enabled",
                      "total_spend_usd", "total_runs")
 
 

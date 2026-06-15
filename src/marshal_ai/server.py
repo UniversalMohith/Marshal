@@ -581,7 +581,7 @@ def update_settings(req: dict) -> dict:
             settings.model_source = src
             updates["model_source"] = src
 
-    for key in ("subagents_enabled", "ai_can_spawn_subagents"):
+    for key in ("subagents_enabled", "ai_can_spawn_subagents", "mcp_tools_enabled"):
         if key in req:
             val = bool(req[key])
             setattr(settings, key, val)
@@ -607,6 +607,7 @@ def update_settings(req: dict) -> dict:
         "model_source": settings.model_source,
         "subagents_enabled": bool(settings.subagents_enabled),
         "ai_can_spawn_subagents": bool(settings.ai_can_spawn_subagents),
+        "mcp_tools_enabled": bool(settings.mcp_tools_enabled),
         "total_spend_usd": round(float(settings.total_spend_usd or 0.0), 6),
         "total_runs": int(settings.total_runs or 0),
     }
@@ -994,6 +995,190 @@ def subagents_auto(req: dict) -> dict:
             "charter": str(raw_new.get("charter") or "").strip(),
         }
     return {"ok": True, "use": use, "new": new}
+
+
+# ===== MCP (Model Context Protocol) — connect external tool servers, isolated from reasoning. =====
+# A "server" is a local MCP stdio process Marshal can launch (e.g. `npx -y @modelcontextprotocol/server-...`).
+# We connect, list its tools, and cache them under "mcp_servers" in .marshal.json (gitignored). Tool calls
+# are opt-in and only run when the user (or, behind a flag, chat) asks for them. Mirrors the
+# _capabilities/_subagents persistence pattern. The reasoning loop is NOT touched.
+def _mcp_servers() -> list:
+    try:
+        data = _json.loads(_GH_PATH.read_text(encoding="utf-8")) if _GH_PATH.exists() else {}
+        return data.get("mcp_servers") or []
+    except Exception:
+        return []
+
+
+def _save_mcp_servers(items: list) -> None:
+    try:
+        data = _json.loads(_GH_PATH.read_text(encoding="utf-8")) if _GH_PATH.exists() else {}
+        data["mcp_servers"] = items
+        _GH_PATH.write_text(_json.dumps(data, indent=2), encoding="utf-8")
+    except Exception:
+        pass
+
+
+def _mcp_sanitise(raw: str) -> str:
+    s = "".join(c if (c.isalnum() or c in "-_") else "-" for c in str(raw or "").lower().strip())
+    return s.strip("-")[:48] or "server"
+
+
+def _mcp_public(s: dict) -> dict:
+    return {
+        "name": s.get("name"),
+        "title": s.get("title") or s.get("name"),
+        "command": s.get("command"),
+        "args": s.get("args") or [],
+        "tools": s.get("tools") or [],
+        "connected": bool(s.get("tools")),
+        "error": s.get("error") or "",
+        "updated": s.get("updated") or 0,
+    }
+
+
+@app.get("/mcp/servers")
+def mcp_servers() -> dict:
+    """List configured MCP servers with their cached tools and a connected flag (for the Settings panel)."""
+    return {
+        "enabled": bool(getattr(settings, "mcp_tools_enabled", False)),
+        "servers": [_mcp_public(s) for s in _mcp_servers()],
+    }
+
+
+@app.post("/mcp/connect")
+def mcp_connect(req: dict) -> dict:
+    """Register an MCP server: {name, command, args[]} -> launch, list tools, cache + persist."""
+    name = _mcp_sanitise(req.get("name") or req.get("title") or "")
+    title = str(req.get("title") or req.get("name") or name).strip()
+    command = str(req.get("command") or "").strip()
+    raw_args = req.get("args")
+    if isinstance(raw_args, str):
+        args = [a for a in raw_args.split() if a]
+    else:
+        args = [str(a) for a in (raw_args or [])]
+    if not command:
+        return {"ok": False, "error": "A command is required, e.g. npx or uvx."}
+
+    try:
+        from . import mcp_client
+        tools = mcp_client.mcp_list_tools(command, args)
+    except Exception as exc:
+        item = {"name": name, "title": title, "command": command, "args": args,
+                "tools": [], "error": f"{type(exc).__name__}: {exc}", "updated": int(time.time())}
+        items = [s for s in _mcp_servers() if s.get("name") != name]
+        items.append(item)
+        _save_mcp_servers(items)
+        return {"ok": False, "error": item["error"],
+                "hint": "Check the command is installed and on PATH (try it in a terminal first). "
+                        "For npx servers, the first run downloads the package and can be slow."}
+
+    item = {"name": name, "title": title, "command": command, "args": args,
+            "tools": tools, "error": "", "updated": int(time.time())}
+    items = [s for s in _mcp_servers() if s.get("name") != name]
+    items.append(item)
+    _save_mcp_servers(items)
+    return {"ok": True, "server": _mcp_public(item)}
+
+
+@app.post("/mcp/call")
+def mcp_call(req: dict) -> dict:
+    """Manually invoke one tool on a configured server. Used by the panel's 'Test tool' affordance."""
+    name = _mcp_sanitise(req.get("server") or req.get("name") or "")
+    tool = str(req.get("tool") or "").strip()
+    tool_args = req.get("args") if isinstance(req.get("args"), dict) else {}
+    srv = next((s for s in _mcp_servers() if s.get("name") == name), None)
+    if not srv:
+        return {"ok": False, "error": "MCP server not found."}
+    if not tool:
+        return {"ok": False, "error": "A tool name is required."}
+    try:
+        from . import mcp_client
+        result = mcp_client.mcp_call_tool(srv["command"], srv.get("args") or [], tool, tool_args)
+        return {"ok": True, "result": result}
+    except Exception as exc:
+        return {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
+
+
+@app.post("/mcp/disconnect")
+def mcp_disconnect(req: dict) -> dict:
+    """Remove a configured MCP server (tool calls launch processes per-call, so this just forgets it)."""
+    name = _mcp_sanitise(req.get("name") or req.get("server") or "")
+    items = [s for s in _mcp_servers() if s.get("name") != name]
+    _save_mcp_servers(items)
+    return {"ok": True, "removed": name}
+
+
+def _gather_mcp_tools():
+    """Collect every connected server's cached tools into one flat list, namespaced <server>__<tool>.
+
+    Returns (tools, index) where index maps the namespaced name -> (command, args, raw_tool_name).
+    """
+    tools, index = [], {}
+    for s in _mcp_servers():
+        if not s.get("tools"):
+            continue
+        for t in s["tools"]:
+            raw = t.get("name")
+            if not raw:
+                continue
+            ns = f"{s['name']}__{raw}"
+            tools.append({"name": ns, "description": t.get("description") or "",
+                          "input_schema": t.get("input_schema") or {"type": "object"}})
+            index[ns] = (s["command"], s.get("args") or [], raw)
+    return tools, index
+
+
+@app.post("/chat-tools")
+def chat_tools(req: dict) -> dict:
+    """Chat that can call MCP tools via the provider-agnostic tool loop. Returns the answer + a trace.
+
+    Separate from /chat so the working chat path is untouched. Falls back to a plain reply when no tools
+    are configured, so it is always safe to call.
+    """
+    message = (req.get("message") or "").strip()
+    if not message:
+        return {"reply": ""}
+    model = req.get("model")
+    system = CHAT_SYSTEM + (
+        "\n\nYou have access to external tools provided over MCP. When a tool can get you real, current, "
+        "or user-specific data you do not already have, call it rather than guessing. Use the fewest tool "
+        "calls that answer the question, then reply in plain prose."
+    )
+
+    tools, index = _gather_mcp_tools()
+    if not tools:
+        try:
+            reply = _helper_reply("marshal-chat-tools", system, message, model)
+            return {"reply": reply.text, "trace": [], "used_tools": False}
+        except Exception as exc:
+            return {"reply": "", "error": f"{type(exc).__name__}: {exc}"}
+
+    def helper_reply_fn(sys_prompt: str, prompt: str) -> str:
+        return _helper_reply("marshal-chat-tools", sys_prompt, prompt, model).text
+
+    def call_tool_fn(tool_name: str, tool_args: dict):
+        cmd_args = index.get(tool_name)
+        if not cmd_args:
+            return {"error": f"Unknown tool: {tool_name}"}
+        command, args, raw = cmd_args
+        from . import mcp_client
+        return mcp_client.mcp_call_tool(command, args, raw, tool_args or {})
+
+    from .tool_loop import run_tool_loop
+    try:
+        res = run_tool_loop(
+            helper_reply_fn=helper_reply_fn,
+            system=system,
+            user_question=message,
+            tools=tools,
+            call_tool_fn=call_tool_fn,
+            max_iters=int(req.get("max_iters") or 4),
+        )
+        return {"reply": res.get("final", ""), "trace": res.get("trace", []),
+                "used_tools": bool(res.get("trace"))}
+    except Exception as exc:
+        return {"reply": "", "error": f"{type(exc).__name__}: {exc}", "trace": []}
 
 
 @app.get("/models")

@@ -501,7 +501,7 @@ function render(){
   else if(store.view==='github'){ title.innerHTML='GitHub'; v.innerHTML=githubHTML(); wireGithub(); }
   else if(store.view==='workshop'){ title.innerHTML='Marshal Workshop'; v.innerHTML=workshopHTML(); wireWorkshop(); if(!workshopCaps) loadWorkshop().then(()=>{ if(store.view==='workshop') render(); }); if(!modelData) loadModels().then(()=>{ if(store.view==='workshop') render(); }); }
   else if(store.view==='subagents'){ if(!subagentsEnabled()){ store.view='settings'; return render(); } title.innerHTML='Subagents'; actions.innerHTML=`<button class="btn sm ghost" id="sa-import">Import</button><button class="btn sm ghost" id="sa-export">Export</button>`; v.innerHTML=subagentsHTML(); wireSubagents(); if(!subagentsData) loadSubagents().then(()=>{ if(store.view==='subagents') render(); }); if(!modelData) loadModels().then(()=>{ if(store.view==='subagents') render(); }); }
-  else if(store.view==='settings'){ title.innerHTML='Settings'; v.innerHTML=settingsHTML(); wireSettings(); if(!modelData) loadModels().then(()=>{ if(store.view==='settings') render(); }); if(!fcfg) loadFoundryConfig().then(()=>{ if(store.view==='settings') render(); }); if(!spendData) loadSpend().then(()=>{ if(store.view==='settings') render(); }); }
+  else if(store.view==='settings'){ title.innerHTML='Settings'; v.innerHTML=settingsHTML(); wireSettings(); if(!modelData) loadModels().then(()=>{ if(store.view==='settings') render(); }); if(!fcfg) loadFoundryConfig().then(()=>{ if(store.view==='settings') render(); }); if(!spendData) loadSpend().then(()=>{ if(store.view==='settings') render(); }); if(!mcpData) loadMcp().then(()=>{ if(store.view==='settings') render(); }); }
 }
 
 function renderPins(){
@@ -1414,6 +1414,46 @@ function subagentsPanelHTML(){
     <div class="row" style="border-top:0;padding-top:10px;justify-content:flex-end"><button class="btn sm" id="s-sub-save">Save subagent settings</button></div></div>`;
 }
 
+// ===== MCP connections (external tool servers) — state + loader + panel =====
+let mcpData=null;   // {enabled, servers:[{name,title,command,args,tools,connected,error}]}
+async function loadMcp(force){
+  if(mcpData && !force) return mcpData;
+  try{ const r=await fetch('/mcp/servers'); mcpData=await r.json(); }
+  catch(e){ mcpData={enabled:false, servers:[]}; }
+  return mcpData;
+}
+function mcpServerCard(s){
+  const tools=(s.tools||[]);
+  const toolPills = tools.length
+    ? tools.map(t=>`<span class="pill" title="${esc(t.description||'')}" style="margin:0 4px 4px 0">${esc(t.name)}</span>`).join('')
+    : `<span class="muted" style="font-size:12px">${s.error?('not reachable: '+esc(s.error)):'no tools discovered'}</span>`;
+  const status = s.connected
+    ? `<span style="color:var(--done)">connected · ${tools.length} tool${tools.length===1?'':'s'}</span>`
+    : `<span style="color:var(--review)">configured · not reachable</span>`;
+  const testBtn = tools.length ? `<button class="btn sm ghost" data-mcp-test="${esc(s.name)}">Test tool</button>` : '';
+  return `<div class="panel"><div class="row" style="border-top:0;padding:0 0 4px;align-items:flex-start">
+      <div style="flex:1;min-width:0"><h2 style="margin:0">${esc(s.title||s.name)}</h2>
+        <div class="muted" style="font-size:12px;margin-top:4px;word-break:break-all"><code>${esc(s.command)} ${esc((s.args||[]).join(' '))}</code></div></div>
+      <button class="iconbtn" data-mcp-del="${esc(s.name)}" title="Remove">${I.trash}</button></div>
+    <div class="row" style="border-top:0;padding-top:4px"><div>Status</div><div style="text-align:right;font-size:13px">${status}</div></div>
+    <div style="padding:6px 0 2px;display:flex;flex-wrap:wrap">${toolPills}</div>
+    ${testBtn?`<div class="row" style="border-top:0;padding-top:8px;justify-content:flex-end">${testBtn}</div>`:''}
+    <div data-mcp-out="${esc(s.name)}"></div></div>`;
+}
+function mcpPanelHTML(){
+  const d=mcpData||{servers:[]};
+  const servers=d.servers||[];
+  const list = servers.length ? servers.map(mcpServerCard).join('') : '';
+  return `<div class="panel"><h2>Connections (MCP) <span class="pill" style="margin-left:6px">Tools</span></h2>
+      <p class="h">Connect external <strong>MCP</strong> tool servers (filesystem, web search, your own). Marshal lists each server's tools and can call them in chat. Servers run as local processes on this machine, exactly like running the command yourself.</p>
+      <div class="row"><div>Tool servers</div><div style="text-align:right;font-size:13px">${servers.length?`${servers.length} configured`:'<span class="muted">none yet</span>'}</div></div>
+      <label class="row" style="cursor:pointer"><div><strong>Let Marshal use MCP tools in chat</strong><div class="muted" style="font-size:12px">When on, the Chat tab can call these tools to answer. Off means tools are only run manually here.</div></div>
+        <input type="checkbox" id="mcp-use" ${d.enabled?'checked':''} ${servers.length?'':'disabled'}></label>
+      <div class="row" style="border-top:0;padding-top:10px;justify-content:flex-end"><button class="btn sm" id="mcp-add">${I.plus||''} Add MCP server</button></div>
+    </div>
+    ${list}`;
+}
+
 function settingsHTML(){
   return `<div class="settings-wrap"><div class="panel"><h2>Appearance</h2><p class="h">Pick a theme. The toggle in the sidebar flips light/dark.</p>
       <div class="row"><div>Theme</div><select id="s-theme">${THEMES.map(t=>`<option value="${t[0]}" ${store.theme===t[0]?'selected':''}>${t[1]}</option>`).join('')}</select></div></div>
@@ -1446,6 +1486,7 @@ function settingsHTML(){
     ${budgetPanelHTML()}
     ${modelSourcePanelHTML()}
     ${subagentsPanelHTML()}
+    ${mcpPanelHTML()}
     <div class="panel"><h2>Marshal learns you</h2><p class="h">Marshal keeps a private master file of how you like to work and updates it automatically from your chats and setup. For your privacy it can't be viewed or edited in the app, only downloaded.</p>
       <div class="row"><div class="muted">Master file</div><div style="text-align:right;font-size:13px" id="s-prof-stat">${profileStatHTML()}</div></div>
       <div class="row" style="border-top:0;padding-top:0"><div class="muted" style="max-width:62%">Add context any time from setup, or just keep chatting. Marshal appends what it learns.</div><div style="display:flex;gap:8px"><button class="btn sm ghost" id="s-prof-ctx">Add context</button><button class="btn sm" id="s-prof-dl">Download .md</button></div></div></div>
@@ -1521,6 +1562,63 @@ function wireSettings(){
     catch(e){ toast('Backend unreachable.'); }
     subSave.textContent='Save subagent settings'; subSave.disabled=false;
   };
+
+  // --- MCP connections ---
+  const mcpAdd=$('mcp-add');
+  if(mcpAdd) mcpAdd.onclick=async()=>{
+    const r=await uiPrompt({title:'Add MCP server', fields:[
+      {id:'name', label:'Name', placeholder:'e.g. filesystem', hint:'A short label for this server.'},
+      {id:'command', label:'Command', placeholder:'npx', hint:'The executable to launch, e.g. npx or uvx.'},
+      {id:'args', label:'Arguments', placeholder:'-y @modelcontextprotocol/server-everything',
+        hint:'Space-separated arguments passed to the command.'}
+    ], okText:'Connect'});
+    if(!r) return;
+    if(!(r.command||'').trim()){ toast('Enter a command, e.g. npx.'); return; }
+    toast('Connecting to MCP server… (first run can download the package)');
+    try{
+      const res=await fetch('/mcp/connect',{method:'POST',headers:{'Content-Type':'application/json'},
+        body:JSON.stringify({name:r.name, title:r.name, command:(r.command||'').trim(), args:(r.args||'').trim()})});
+      const d=await res.json();
+      if(!d.ok){ uiInfo({title:'Could not connect', body:(d.error||'Failed.')+(d.hint?('  '+d.hint):'')}); }
+      else { toast('Connected. '+(((d.server&&d.server.tools)||[]).length)+' tool(s) found.'); }
+      mcpData=null; await loadMcp(true); render();
+    }catch(e){ uiInfo({title:'Could not connect', body:'Could not reach the backend.'}); }
+  };
+  const mcpUse=$('mcp-use');
+  if(mcpUse) mcpUse.onchange=async()=>{
+    try{ const res=await fetch('/settings',{method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({mcp_tools_enabled: !!mcpUse.checked})});
+      const d=await res.json(); if(d.ok){ if(mcpData) mcpData.enabled=!!mcpUse.checked;
+        toast(mcpUse.checked?'Marshal can use MCP tools in chat.':'MCP tools off in chat.'); } }
+    catch(e){ toast('Backend unreachable.'); mcpUse.checked=!mcpUse.checked; }
+  };
+  document.querySelectorAll('[data-mcp-del]').forEach(b=> b.onclick=async()=>{
+    const ok=await uiConfirm({title:'Remove MCP server?', body:'This forgets the server and its tools.', okText:'Remove', danger:true});
+    if(!ok) return;
+    await fetch('/mcp/disconnect',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name:b.dataset.mcpDel})});
+    mcpData=null; await loadMcp(true); toast('Server removed.'); render();
+  });
+  document.querySelectorAll('[data-mcp-test]').forEach(b=> b.onclick=async()=>{
+    const sname=b.dataset.mcpTest;
+    const srv=(mcpData&&mcpData.servers||[]).find(s=>s.name===sname); if(!srv) return;
+    const toolOpts=(srv.tools||[]).map(t=>({value:t.name, label:t.name}));
+    const r=await uiPrompt({title:'Test a tool on '+(srv.title||sname), fields:[
+      {id:'tool', label:'Tool', select:true, value:(toolOpts[0]||{}).value, options:toolOpts},
+      {id:'args', label:'Arguments (JSON)', multiline:true, placeholder:'{ }', hint:'A JSON object of arguments for the tool.'}
+    ], okText:'Run tool'});
+    if(!r) return;
+    let argsObj={}; try{ argsObj=r.args?JSON.parse(r.args):{}; }catch(e){ uiInfo({title:'Invalid JSON', body:'The arguments must be a JSON object.'}); return; }
+    const out=document.querySelector(`[data-mcp-out="${CSS.escape(sname)}"]`);
+    if(out) out.innerHTML='<div class="muted" style="padding:8px 0">Running '+esc(r.tool)+'…</div>';
+    try{
+      const res=await fetch('/mcp/call',{method:'POST',headers:{'Content-Type':'application/json'},
+        body:JSON.stringify({server:sname, tool:r.tool, args:argsObj})});
+      const d=await res.json();
+      if(out) out.innerHTML = d.ok
+        ? `<div class="panel" style="margin:10px 0 0;background:var(--surface2)"><div class="muted" style="font-size:11px;text-transform:uppercase;letter-spacing:.5px;margin-bottom:6px">Result</div><div style="white-space:pre-wrap;line-height:1.55">${esc(JSON.stringify(d.result,null,2))}</div></div>`
+        : `<div class="muted" style="color:#e0607e;padding:10px 0">${esc(d.error||'Failed.')}</div>`;
+    }catch(e){ if(out) out.innerHTML='<div class="muted" style="color:#e0607e;padding:10px 0">Backend unreachable.</div>'; }
+  });
 }
 async function downloadMasterFile(){
   try{
@@ -1607,7 +1705,12 @@ function chatHTML(){
     </div>
   </div>`;
 }
-function msgHTML(m){ const cites=(m.role==='ai'&&m.citations&&m.citations.length)?citationsHTML(m.citations, m.groundLabel, {projectId:m.groundProject}):''; return `<div class="msg ${m.role==='me'?'me':'ai'}"><span class="who">${m.role==='me'?'You':'M'}</span><div class="bubble">${esc(m.text)}${cites}</div></div>`; }
+function toolChipsHTML(trace){
+  if(!trace || !trace.length) return '';
+  const chips = trace.filter(t=>t.tool).map(t=>`<span class="pill" title="${esc(JSON.stringify(t.args||{}))}" style="margin:6px 4px 0 0;${t.ok===false?'color:#e0607e':''}">${t.ok===false?'✕ ':'⚒ '}used ${esc(t.tool)}</span>`).join('');
+  return chips?`<div class="toolchips" style="margin-top:4px">${chips}</div>`:'';
+}
+function msgHTML(m){ const cites=(m.role==='ai'&&m.citations&&m.citations.length)?citationsHTML(m.citations, m.groundLabel, {projectId:m.groundProject}):''; const chips=(m.role==='ai')?toolChipsHTML(m.trace):''; return `<div class="msg ${m.role==='me'?'me':'ai'}"><span class="who">${m.role==='me'?'You':'M'}</span><div class="bubble">${esc(m.text)}${cites}${chips}</div></div>`; }
 function wireChat(){
   const box=$('chat-msgs'); if(box) box.scrollTop=box.scrollHeight;
   const clr=$('chat-clear'); if(clr) clr.onclick=async()=>{ if(!store.chat.messages.length) return; const ok=await uiConfirm({title:'Clear chat?',body:'This removes the current conversation.',okText:'Clear',danger:true}); if(ok){ store.chat.messages=[]; persist(); render(); } };
@@ -1630,16 +1733,19 @@ async function sendChat(){
   persist(); render();
   const box=$('chat-msgs');
   if(box){ const tip=document.createElement('div'); tip.className='msg ai'; tip.id='chat-typing'; tip.innerHTML='<span class="who">M</span><div class="bubble typing">Marshal is thinking…</div>'; box.appendChild(tip); box.scrollTop=box.scrollHeight; }
-  let reply, citations=[], groundLabel='';
+  let reply, citations=[], groundLabel='', toolTrace=[];
   try{
     const names=chatModels().map(d=>d.name); const model=(store.chat.model && names.includes(store.chat.model)) ? store.chat.model : '';
-    const res=await fetch('/chat',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({message:text, history, source, knowledge, model})});
+    // When MCP tools are enabled, route to the tool-enabled endpoint so Marshal can call them.
+    const useTools = !!(mcpData && mcpData.enabled);
+    const url = useTools ? '/chat-tools' : '/chat';
+    const res=await fetch(url,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({message:text, history, source, knowledge, model})});
     const data=await res.json();
     reply = deEm(data.reply || data.error || '(no reply)');
-    citations = data.citations || []; groundLabel = data.groundLabel || '';
+    citations = data.citations || []; groundLabel = data.groundLabel || ''; toolTrace = data.trace || [];
   }catch(e){ reply='Could not reach the chat backend. Is the server running?'; }
   await typeReply(reply);   // stream the reply in, instead of dropping it instantly
-  store.chat.messages.push({role:'ai',text:reply,citations,groundLabel,groundProject:gp?gp.id:''});
+  store.chat.messages.push({role:'ai',text:reply,citations,groundLabel,groundProject:gp?gp.id:'',trace:toolTrace});
   chatBusy=false; persist();
   if(store.view==='chat') render();
 }
