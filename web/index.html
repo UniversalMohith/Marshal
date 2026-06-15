@@ -338,6 +338,7 @@
     <button class="rbtn" data-nav="models" title="Models">__I_layers__<span class="tip">Models</span></button>
     <button class="rbtn" data-nav="github" title="GitHub">__I_github__<span class="tip">GitHub</span></button>
     <button class="rbtn" data-nav="workshop" title="Workshop">__I_spark__<span class="tip">Workshop</span></button>
+    <button class="rbtn" data-nav="subagents" id="nav-subagents" title="Subagents" style="display:none">__I_users__<span class="tip">Subagents</span></button>
     <div class="sep"></div>
     <div id="pins" style="display:flex;flex-direction:column;gap:6px;align-items:center;"></div>
     <div class="spacer"></div>
@@ -380,6 +381,7 @@ const I = {
   file:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z"/><path d="M14 3v5h5"/></svg>',
   windows:'<svg viewBox="0 0 24 24" fill="currentColor"><rect x="3" y="3" width="8" height="8" rx="1"/><rect x="13" y="3" width="8" height="8" rx="1"/><rect x="3" y="13" width="8" height="8" rx="1"/><rect x="13" y="13" width="8" height="8" rx="1"/></svg>',
   check:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12l5 5L20 7"/></svg>',
+  users:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="9" cy="8" r="3.2"/><path d="M3.5 19a5.5 5.5 0 0 1 11 0"/><path d="M16 5.2a3.2 3.2 0 0 1 0 6"/><path d="M18 13.4a5.5 5.5 0 0 1 3 5.6"/></svg>',
 };
 // Inject icons into the rail only (where the __I_x__ placeholders live), not the whole body,
 // so this never re-serialises live nodes or wipes listeners.
@@ -460,9 +462,14 @@ function boardScroll(s){
   if(s===undefined){ const o={cols:{}}; const b=view.querySelector('.board'); o.board=b?b.scrollLeft:0; view.querySelectorAll('.col-body').forEach(cb=>{ o.cols[cb.dataset.body]=cb.scrollTop; }); return o; }
   const b=view.querySelector('.board'); if(b&&s.board) b.scrollLeft=s.board; view.querySelectorAll('.col-body').forEach(cb=>{ const v=s.cols[cb.dataset.body]; if(v) cb.scrollTop=v; });
 }
+// Subagents tab visibility follows the opt-in flag (cached on /config). The rail button exists
+// but starts hidden; this shows it once the flag is known and keeps it in sync on every render.
+function subagentsEnabled(){ return !!(fcfg && fcfg.subagents_enabled); }
+function applySubagentVisibility(){ const b=$('nav-subagents'); if(b) b.style.display = subagentsEnabled() ? '' : 'none'; }
 function render(){
   document.querySelectorAll('.rbtn[data-nav]').forEach(b=> b.classList.toggle('active', b.dataset.nav===store.view));
   renderPins();
+  applySubagentVisibility();
   const v=$('view'), title=$('title'), actions=$('actions'); actions.innerHTML='';
   if(store.view==='dashboard'){ title.innerHTML='Dashboard'; v.innerHTML=dashboardHTML(); wireDashboard(); }
   else if(store.view==='projects'){ title.innerHTML='Projects'; actions.innerHTML=`<button class="btn sm" id="newP">${I.plus} New project</button>`; v.innerHTML=projectsHTML(); wireProjects(); $('newP').onclick=newProject; }
@@ -471,6 +478,7 @@ function render(){
   else if(store.view==='models'){ title.innerHTML='Models'; v.innerHTML=modelsHTML(); wireModels(); if(!modelData) loadModels().then(()=>{ if(store.view==='models') render(); }); }
   else if(store.view==='github'){ title.innerHTML='GitHub'; v.innerHTML=githubHTML(); wireGithub(); }
   else if(store.view==='workshop'){ title.innerHTML='Marshal Workshop'; v.innerHTML=workshopHTML(); wireWorkshop(); if(!workshopCaps) loadWorkshop().then(()=>{ if(store.view==='workshop') render(); }); if(!modelData) loadModels().then(()=>{ if(store.view==='workshop') render(); }); }
+  else if(store.view==='subagents'){ if(!subagentsEnabled()){ store.view='settings'; return render(); } title.innerHTML='Subagents'; actions.innerHTML=`<button class="btn sm ghost" id="sa-import">Import</button><button class="btn sm ghost" id="sa-export">Export</button>`; v.innerHTML=subagentsHTML(); wireSubagents(); if(!subagentsData) loadSubagents().then(()=>{ if(store.view==='subagents') render(); }); if(!modelData) loadModels().then(()=>{ if(store.view==='subagents') render(); }); }
   else if(store.view==='settings'){ title.innerHTML='Settings'; v.innerHTML=settingsHTML(); wireSettings(); if(!modelData) loadModels().then(()=>{ if(store.view==='settings') render(); }); if(!fcfg) loadFoundryConfig().then(()=>{ if(store.view==='settings') render(); }); if(!spendData) loadSpend().then(()=>{ if(store.view==='settings') render(); }); }
 }
 
@@ -1083,6 +1091,107 @@ function wireWorkshop(){
   }; });
 }
 
+// ===== Subagents (user-created persistent named agents; opt-in, gated by the Settings toggle) =====
+let subagentsData=null;   // {enabled, ai_spawn, subagents:[...]}
+async function loadSubagents(force){
+  if(subagentsData && !force) return subagentsData;
+  try{ const r=await fetch('/subagents'); subagentsData=await r.json(); }catch(e){ subagentsData={enabled:false, ai_spawn:false, subagents:[]}; }
+  return subagentsData;
+}
+const SA_COST_WARNING='Running many subagents at once multiplies cost: each one is a separate model call on your Foundry deployment. Spawn deliberately, a few at a time, and watch your spend.';
+function subagentsHTML(){
+  const d=subagentsData||{subagents:[]};
+  const subs=d.subagents||[];
+  const warn=`<div class="panel" style="border-color:var(--review);background:color-mix(in srgb,var(--review) 7%,transparent)">
+    <h2 style="display:flex;align-items:center;gap:8px;color:var(--review)">⚠ Cost warning</h2>
+    <p class="h" style="margin:0">${esc(SA_COST_WARNING)}</p></div>`;
+  const createPanel=`<div class="panel"><h2>New subagent</h2><p class="h">A subagent is a persistent named agent with its own charter. Give it a name and a role; Marshal will write a full charter if you do not paste one. It runs on your Foundry model, the same way a Workshop capability does.</p>
+    <div class="field"><label>Name</label><input id="sa-name" type="text" placeholder="e.g. Research Scout"></div>
+    <div class="field"><label>Role (one line)</label><input id="sa-role" type="text" placeholder="e.g. Surveys options and summarises trade-offs with sources"></div>
+    <div class="field"><label>Charter (optional — leave blank to have Marshal write it)</label><textarea id="sa-charter" placeholder="Full system prompt for this subagent, in the second person." style="min-height:84px"></textarea></div>
+    <div class="row" style="border-top:0;padding-top:6px;justify-content:flex-end"><button class="btn" id="sa-create">${I.plus} Create subagent</button></div></div>`;
+  const list = subs.length ? subs.map(subagentCard).join('') :
+    `<div class="empty"><div class="eicon">${I.users}</div><h3>No subagents yet</h3><p>Create one above, or import a set you exported earlier.</p></div>`;
+  return `<div class="settings-wrap">
+    ${warn}
+    ${createPanel}
+    <div class="section-h"><h2>Your subagents <span class="pill">${subs.length}</span></h2></div>
+    ${list}</div>`;
+}
+function subagentCard(s){
+  return `<div class="panel"><div class="row" style="border-top:0;padding:0 0 4px;align-items:flex-start">
+      <div style="flex:1;min-width:0"><h2 style="margin:0">${esc(s.title||s.name)}</h2><p class="h" style="margin:6px 0 0">${esc(s.role||'')}</p></div>
+      <button class="iconbtn" data-sa-del="${esc(s.name)}" title="Delete subagent">${I.trash}</button></div>
+    <details class="cites" style="margin-top:8px"><summary>Charter</summary><div style="padding:10px 12px;white-space:pre-wrap;font-size:12.5px;line-height:1.55;color:var(--muted)">${esc(s.charter||'')}</div></details>
+    <textarea data-sa-in="${esc(s.name)}" placeholder="Give this subagent a task to work on…" style="width:100%;min-height:60px;margin-top:8px"></textarea>
+    <div class="row" style="border-top:0;padding-top:8px;justify-content:flex-end"><button class="btn sm" data-sa-spawn="${esc(s.name)}">Spawn on task</button></div>
+    <div data-sa-out="${esc(s.name)}"></div></div>`;
+}
+function wireSubagents(){
+  const exp=$('sa-export'); if(exp) exp.onclick=subagentsExport;
+  const imp=$('sa-import'); if(imp) imp.onclick=subagentsImport;
+  const create=$('sa-create'); if(create) create.onclick=async function(){
+    const name=($('sa-name').value||'').trim();
+    const role=($('sa-role').value||'').trim();
+    const charter=($('sa-charter').value||'').trim();
+    if(!name && !role){ toast('Give the subagent a name and a role.'); return; }
+    create.textContent='Creating…'; create.disabled=true;
+    try{
+      const r=await fetch('/subagents/create',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name, title:name, role, charter})});
+      const d=await r.json();
+      if(d.ok){ toast('Created '+(d.subagent.title||d.subagent.name)+'.'); subagentsData=null; await loadSubagents(true); render(); }
+      else { uiInfo({title:'Could not create', body:d.error||'Try again.'}); create.innerHTML=I.plus+' Create subagent'; create.disabled=false; }
+    }catch(e){ toast('Backend unreachable.'); create.innerHTML=I.plus+' Create subagent'; create.disabled=false; }
+  };
+  document.querySelectorAll('[data-sa-spawn]').forEach(function(b){ b.onclick=async function(){
+    const name=b.dataset.saSpawn;
+    const inEl=document.querySelector('[data-sa-in="'+CSS.escape(name)+'"]');
+    const out=document.querySelector('[data-sa-out="'+CSS.escape(name)+'"]');
+    const prompt=((inEl&&inEl.value)||'').trim(); if(!prompt){ toast('Enter a task for the subagent.'); return; }
+    b.textContent='Spawning…'; b.disabled=true; out.innerHTML='<div class="muted" style="padding:10px 0">Subagent working…</div>';
+    try{
+      const r=await fetch('/subagents/spawn',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name, prompt})});
+      const d=await r.json();
+      out.innerHTML = d.ok
+        ? `<div class="panel" style="margin:10px 0 0;background:var(--surface2)"><div class="muted" style="font-size:11px;text-transform:uppercase;letter-spacing:.5px;margin-bottom:6px">Output</div><div style="white-space:pre-wrap;line-height:1.55">${esc(deEm(d.output||''))}</div></div>`
+        : `<div class="muted" style="color:#e0607e;padding:10px 0">${esc(d.error||'Failed.')}</div>`;
+    }catch(e){ out.innerHTML='<div class="muted" style="color:#e0607e;padding:10px 0">Backend unreachable.</div>'; }
+    b.textContent='Spawn on task'; b.disabled=false;
+  }; });
+  document.querySelectorAll('[data-sa-del]').forEach(function(b){ b.onclick=async function(){
+    const ok=await uiConfirm({title:'Delete subagent?', body:'This removes it for good.', okText:'Delete', danger:true});
+    if(!ok) return;
+    await fetch('/subagents/delete',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name:b.dataset.saDel})});
+    subagentsData=null; await loadSubagents(true); toast('Subagent deleted.'); render();
+  }; });
+}
+async function subagentsExport(){
+  try{
+    const r=await fetch('/subagents/export'); const d=await r.json();
+    if(!d.ok){ toast(d.error||'Export failed.'); return; }
+    const blob=new Blob([JSON.stringify({version:d.version||1, subagents:d.subagents||[]}, null, 2)], {type:'application/json'});
+    const a=document.createElement('a'); a.href=URL.createObjectURL(blob); a.download='marshal-subagents.json';
+    document.body.appendChild(a); a.click(); setTimeout(()=>{ URL.revokeObjectURL(a.href); a.remove(); },0);
+    toast('Exported '+((d.subagents||[]).length)+' subagent(s).');
+  }catch(e){ toast('Could not reach the backend.'); }
+}
+function subagentsImport(){
+  const inp=document.createElement('input'); inp.type='file'; inp.accept='application/json,.json';
+  inp.onchange=async()=>{
+    const f=inp.files&&inp.files[0]; if(!f) return;
+    let parsed; try{ parsed=JSON.parse(await f.text()); }catch(e){ uiInfo({title:'Invalid file', body:'That file is not valid JSON.'}); return; }
+    const subs = Array.isArray(parsed) ? parsed : (parsed && parsed.subagents);
+    if(!Array.isArray(subs)){ uiInfo({title:'Invalid file', body:'Expected a JSON document with a "subagents" array.'}); return; }
+    try{
+      const r=await fetch('/subagents/import',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({subagents:subs})});
+      const d=await r.json();
+      if(!d.ok){ uiInfo({title:'Import failed', body:d.error||'Failed.'}); return; }
+      subagentsData=null; await loadSubagents(true); render(); toast('Imported '+(d.imported||0)+' subagent(s).');
+    }catch(e){ toast('Could not reach the backend.'); }
+  };
+  inp.click();
+}
+
 // ===== Settings panels: budget/spend, model source, subagents =====
 function budgetPanelHTML(){
   const s = spendData || {};
@@ -1122,8 +1231,8 @@ function subagentsPanelHTML(){
   const sAi = (spendData && 'ai_can_spawn_subagents' in spendData) ? !!spendData.ai_can_spawn_subagents
             : (fcfg && 'ai_can_spawn_subagents' in fcfg) ? !!fcfg.ai_can_spawn_subagents : false;
   return `<div class="panel"><h2>Subagents</h2>
-    <p class="h">Subagents let Marshal break work across more specialised helpers. Running many at once can get expensive.</p>
-    <label class="row" style="cursor:pointer"><div><strong>Enable subagents</strong><div class="muted" style="font-size:12px">Allow Marshal to use subagents while reasoning.</div></div>
+    <p class="h">Subagents are persistent named agents you create, each with its own charter. Running many at once can get expensive.</p>
+    <label class="row" style="cursor:pointer"><div><strong>Enable subagents</strong><div class="muted" style="font-size:12px">Shows or hides the Subagents tab in the sidebar.</div></div>
       <input type="checkbox" id="s-sub-enabled" ${sEnabled?'checked':''}></label>
     <label class="row" style="cursor:pointer;border-top:0;padding-top:6px"><div><strong>Let Marshal spawn subagents on its own</strong><div class="muted" style="font-size:12px">Marshal may create new subagents without asking. Off means it only uses ones you set up.</div></div>
       <input type="checkbox" id="s-sub-ai" ${sAi?'checked':''} ${sEnabled?'':'disabled'}></label>
@@ -1212,7 +1321,7 @@ function wireSettings(){
     const body={ subagents_enabled: !!(subEn&&subEn.checked), ai_can_spawn_subagents: !!(subAi&&subAi.checked) };
     subSave.textContent='Saving…'; subSave.disabled=true;
     try{ const r=await fetch('/settings',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
-      const d=await r.json(); if(d.ok){ if(spendData){ spendData.subagents_enabled=d.subagents_enabled; spendData.ai_can_spawn_subagents=d.ai_can_spawn_subagents; } if(fcfg){ fcfg.subagents_enabled=d.subagents_enabled; fcfg.ai_can_spawn_subagents=d.ai_can_spawn_subagents; } toast('Subagent settings saved.'); }
+      const d=await r.json(); if(d.ok){ if(spendData){ spendData.subagents_enabled=d.subagents_enabled; spendData.ai_can_spawn_subagents=d.ai_can_spawn_subagents; } if(fcfg){ fcfg.subagents_enabled=d.subagents_enabled; fcfg.ai_can_spawn_subagents=d.ai_can_spawn_subagents; } subagentsData=null; applySubagentVisibility(); toast('Subagent settings saved. '+(d.subagents_enabled?'Subagents tab is now in the sidebar.':'Subagents tab hidden.')); }
       else toast('Could not save subagent settings.'); }
     catch(e){ toast('Backend unreachable.'); }
     subSave.textContent='Save subagent settings'; subSave.disabled=false;
@@ -1687,6 +1796,8 @@ applyTheme(store.theme);
 render();
 // Pick up server config (e.g. whether Foundry IQ is set up) and re-render the affected views.
 loadConfig().then(()=>{ if(store.view==='chat') render(); });
+// Load Foundry config so the Subagents rail tab can appear on first paint when enabled.
+loadFoundryConfig().then(()=>{ applySubagentVisibility(); if(store.view==='subagents'||store.view==='settings') render(); });
 // Load real model data so the board can stamp cards with the model actually in use.
 loadModels().then(()=>{ if(store.view==='models') render(); });
 loadGithubStatus();   // so a connected GitHub repo enables "Push to GitHub" on cards

@@ -12,6 +12,7 @@ from __future__ import annotations
 import asyncio
 import math
 import threading
+import time
 from pathlib import Path
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
@@ -474,6 +475,242 @@ def workshop_invoke(req: dict) -> dict:
 def workshop_delete(req: dict) -> dict:
     _save_capabilities([c for c in _capabilities() if c.get("name") != (req.get("name") or "").strip()])
     return {"ok": True}
+
+
+# ===== Subagents — user-created persistent named agents with a charter. =====
+# A subagent reuses the Workshop pattern: a charter (system prompt) registered as a Foundry agent
+# and run via _helper_reply. Unlike a Workshop capability (which Marshal designs), the USER authors
+# a subagent (name + role/charter). Stored in .marshal.json under "subagents" (gitignored). Governed
+# by the two opt-in flags persisted via /settings (settings.subagents_enabled / ai_can_spawn_subagents).
+SUBAGENT_CHARTER_SYSTEM = (
+    "You are Marshal's subagent designer. From a short role description, write a clear, focused "
+    "system prompt (a charter) for a single specialised agent. Write it in the second person, "
+    "telling the agent exactly how to behave, its scope, and what to output. Reply with the charter "
+    "text ONLY, no preamble, no code fences, no JSON. House style: British English, no em dashes, "
+    "direct and practical, 4 to 10 sentences."
+)
+
+SUBAGENT_PICK_SYSTEM = (
+    "You decide which specialised subagents would help with a project task, from a provided roster. "
+    "You may also propose ONE brand-new subagent if a clear gap exists. Be conservative: most tasks "
+    "need zero or one subagent. Reply with STRICT JSON only, no prose, no code fences: "
+    '{"use": ["existing-subagent-name", ...], '
+    '"new": {"title": "Short Title", "role": "one-line role", "charter": "full charter, second person"} | null}. '
+    "House style for any charter: British English, no em dashes, direct and practical."
+)
+
+
+def _sa_sanitise(raw: str) -> str:
+    """kebab-ish id safe for a Foundry agent name (no dots etc.), matching the Workshop scheme."""
+    s = "".join(c if (c.isalnum() or c in "-_") else "-" for c in str(raw or "").lower().strip())
+    return s.strip("-")[:48] or "subagent"
+
+
+def _subagents() -> list:
+    try:
+        data = _json.loads(_GH_PATH.read_text(encoding="utf-8")) if _GH_PATH.exists() else {}
+        return data.get("subagents") or []
+    except Exception:
+        return []
+
+
+def _save_subagents(items: list) -> None:
+    try:
+        data = _json.loads(_GH_PATH.read_text(encoding="utf-8")) if _GH_PATH.exists() else {}
+        data["subagents"] = items
+        _GH_PATH.write_text(_json.dumps(data, indent=2), encoding="utf-8")
+    except Exception:
+        pass
+
+
+def _sa_guard() -> dict | None:
+    """Return a refusal dict if the subsystem is off, else None. Every endpoint calls this first."""
+    if not settings.subagents_enabled:
+        return {"ok": False, "error": "Subagents are disabled. Enable them in Settings first."}
+    return None
+
+
+def _sa_register(name: str, charter: str) -> None:
+    """Best-effort: register the subagent as a Foundry prompt agent so it is usable immediately."""
+    try:
+        if settings.project_endpoint and charter:
+            from .foundry import Foundry
+
+            global _FOUNDRY_HELPER
+            if _FOUNDRY_HELPER is None:
+                _FOUNDRY_HELPER = Foundry(settings.project_endpoint)
+            aname = f"marshal-subagent-{name}"
+            _FOUNDRY_HELPER.ensure_agent(aname, settings.worker_model, charter)
+            _HELPER_AGENTS.add(aname)
+    except Exception:
+        pass
+
+
+@app.get("/subagents")
+def subagents_list() -> dict:
+    """List subagents and the two governing flags (so the UI can render even when disabled)."""
+    return {
+        "enabled": bool(settings.subagents_enabled),
+        "ai_spawn": bool(settings.ai_can_spawn_subagents),
+        "subagents": _subagents() if settings.subagents_enabled else [],
+    }
+
+
+@app.post("/subagents/create")
+def subagents_create(req: dict) -> dict:
+    """Create (or overwrite by name) a user-authored subagent.
+
+    The user supplies a name and a role/charter. If only a short role is given, Marshal expands it
+    into a full charter via _helper_reply (best-effort; falls back to the role text itself).
+    """
+    g = _sa_guard()
+    if g:
+        return g
+    name = _sa_sanitise(req.get("name") or req.get("title") or "")
+    title = str(req.get("title") or req.get("name") or name).strip()
+    role = str(req.get("role") or "").strip()
+    charter = str(req.get("charter") or "").strip()
+    if not (title or role or charter):
+        return {"ok": False, "error": "Give the subagent a name and a role or charter."}
+    if not charter:
+        if not role:
+            return {"ok": False, "error": "Describe the subagent's role."}
+        try:
+            reply = _helper_reply(
+                "marshal-subagent-design", SUBAGENT_CHARTER_SYSTEM,
+                f"Role: {role}\n\nWrite the charter.", req.get("model"),
+            )
+            charter = (reply.text or "").strip() or role
+        except Exception:
+            charter = role  # degrade gracefully; the role is a usable charter on its own
+    item = {
+        "name": name,
+        "title": title or name,
+        "role": role or title or name,
+        "charter": charter,
+        "created": int(time.time()),
+    }
+    items = [s for s in _subagents() if s.get("name") != name]  # overwrite on name clash
+    items.append(item)
+    _save_subagents(items)
+    _sa_register(name, charter)
+    return {"ok": True, "subagent": item}
+
+
+@app.post("/subagents/spawn")
+def subagents_spawn(req: dict) -> dict:
+    """Run ONE subagent on a prompt: the user (or the AI) putting a named agent to work on a task."""
+    g = _sa_guard()
+    if g:
+        return g
+    name = _sa_sanitise(req.get("name") or "")
+    prompt = (req.get("prompt") or req.get("input") or "").strip()
+    sub = next((s for s in _subagents() if s.get("name") == name), None)
+    if not sub:
+        return {"ok": False, "error": "Subagent not found."}
+    if not prompt:
+        return {"ok": False, "error": "Give the subagent a task to work on."}
+    try:
+        reply = _helper_reply(f"marshal-subagent-{name}", sub["charter"], prompt, req.get("model"))
+        return {"ok": True, "name": name, "title": sub.get("title", name), "output": reply.text,
+                "input_tokens": reply.input_tokens, "output_tokens": reply.output_tokens}
+    except Exception as exc:
+        return {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
+
+
+@app.post("/subagents/delete")
+def subagents_delete(req: dict) -> dict:
+    g = _sa_guard()
+    if g:
+        return g
+    _save_subagents([s for s in _subagents() if s.get("name") != _sa_sanitise(req.get("name") or "")])
+    return {"ok": True}
+
+
+@app.get("/subagents/export")
+def subagents_export() -> dict:
+    """Return all subagents as a portable JSON document (the browser downloads it as a file)."""
+    g = _sa_guard()
+    if g:
+        return g
+    return {"ok": True, "version": 1, "subagents": _subagents()}
+
+
+@app.post("/subagents/import")
+def subagents_import(req: dict) -> dict:
+    """Import subagents from an uploaded JSON document. Merges by name (imported wins on clash)."""
+    g = _sa_guard()
+    if g:
+        return g
+    incoming = req.get("subagents")
+    if incoming is None and isinstance(req.get("data"), dict):  # tolerate {data:{subagents:[...]}}
+        incoming = req["data"].get("subagents")
+    if not isinstance(incoming, list):
+        return {"ok": False, "error": "Expected a JSON document with a 'subagents' array."}
+    existing = {s.get("name"): s for s in _subagents() if s.get("name")}
+    added = 0
+    for raw in incoming:
+        if not isinstance(raw, dict):
+            continue
+        name = _sa_sanitise(raw.get("name") or raw.get("title") or "")
+        charter = str(raw.get("charter") or raw.get("role") or "").strip()
+        if not charter:
+            continue  # skip empty/garbage entries
+        existing[name] = {
+            "name": name,
+            "title": str(raw.get("title") or name).strip() or name,
+            "role": str(raw.get("role") or raw.get("title") or name).strip(),
+            "charter": charter,
+            "created": int(raw.get("created") or time.time()),
+        }
+        _sa_register(name, charter)
+        added += 1
+    items = list(existing.values())
+    _save_subagents(items)
+    return {"ok": True, "imported": added, "subagents": items}
+
+
+@app.post("/subagents/auto")
+def subagents_auto(req: dict) -> dict:
+    """Opt-in: given a task, suggest which subagents to use (and optionally one new one).
+
+    Returns suggestions only; the caller spawns them explicitly. Refuses unless BOTH the subsystem
+    and AI-spawn are enabled, so the AI can never run subagents without the user opting in.
+    """
+    if not settings.subagents_enabled:
+        return {"ok": False, "error": "Subagents are disabled."}
+    if not settings.ai_can_spawn_subagents:
+        return {"ok": False, "error": "AI spawning of subagents is turned off.", "ai_spawn": False}
+    task = (req.get("task") or req.get("goal") or "").strip()
+    if not task:
+        return {"ok": False, "error": "No task given."}
+    from .loop import _extract_json
+
+    roster = _subagents()
+    roster_block = "\n".join(f"- {s.get('name')}: {s.get('role') or s.get('title')}" for s in roster) or "(none yet)"
+    prompt = (
+        f"TASK:\n{task}\n\n"
+        f"EXISTING SUBAGENTS:\n{roster_block}\n\n"
+        "Decide. STRICT JSON ONLY."
+    )
+    try:
+        reply = _helper_reply("marshal-subagent-pick", SUBAGENT_PICK_SYSTEM, prompt, req.get("model"))
+        spec = _extract_json(reply.text) or {}
+    except Exception as exc:
+        return {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
+    have = {s.get("name") for s in roster}
+    use = [_sa_sanitise(n) for n in (spec.get("use") or []) if _sa_sanitise(n) in have]
+    new = None
+    raw_new = spec.get("new")
+    if isinstance(raw_new, dict) and str(raw_new.get("charter") or "").strip():
+        nm = _sa_sanitise(raw_new.get("title") or raw_new.get("role") or "subagent")
+        new = {
+            "name": nm,
+            "title": str(raw_new.get("title") or nm).strip(),
+            "role": str(raw_new.get("role") or "").strip(),
+            "charter": str(raw_new.get("charter") or "").strip(),
+        }
+    return {"ok": True, "use": use, "new": new}
 
 
 @app.get("/models")
