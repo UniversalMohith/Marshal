@@ -1,4 +1,4 @@
-"""The Budget Governor: the reliability spine of Hackathon Jarvis.
+"""The Budget Governor: the reliability spine of Marshal.
 
 It caps spend for answering a single question, decides how aggressively the swarm
 may work as the budget burns down, and always holds a reserve back so the

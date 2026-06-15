@@ -11,6 +11,7 @@ and no live connection.
 """
 from __future__ import annotations
 
+import time
 from dataclasses import dataclass
 
 
@@ -68,7 +69,18 @@ class Foundry:
         }
         if conversation_id:
             kwargs["conversation"] = conversation_id
-        response = self.openai.responses.create(**kwargs)
+        # One retry on a transient failure (rate limit, timeout, 5xx) so a single
+        # hiccup rides through rather than blanking a worker or crashing the run.
+        response = None
+        for attempt in range(2):
+            try:
+                response = self.openai.responses.create(**kwargs)
+                break
+            except Exception:
+                if attempt == 0:
+                    time.sleep(1.0)
+                    continue
+                raise
         return AgentReply(
             text=getattr(response, "output_text", "") or "",
             input_tokens=_usage(response, "input_tokens"),

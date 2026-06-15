@@ -1,5 +1,6 @@
 # Secrets and local config (never commit)
 .env
+.marshal.json
 *.key
 .azure/
 
@@ -24,3 +25,6 @@ Thumbs.db
 .vscode/
 .idea/
 .claude/
+
+# Stray local plugin-marketplace mirror (not part of Marshal)
+_vet/

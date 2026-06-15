@@ -4,6 +4,8 @@ A self-governing multi-agent reasoning system on Microsoft Foundry. This documen
 describes the design, the control loop, and the reliability mechanisms, and shows
 where the Microsoft tools sit.
 
+![Marshal architecture](architecture.svg)
+
 ## Design in one paragraph
 
 A hard question enters. An **Orchestrator** agent decomposes it into a small set of

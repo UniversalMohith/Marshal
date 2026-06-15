@@ -399,33 +399,13 @@ function ensureColumn(p, col){
 const AICOLORS = ['#a855f7','#7c6cff','#d946ef'];
 function uid(){ return Math.random().toString(36).slice(2,9); }
 
-const seed = {
-  projects: [
-    { id:'p1', name:'Marshal Website', desc:'Build the agent workspace UI', members:[
-        {name:'You',kind:'human',c:'#3fce7e'},{name:'Orchestrator',kind:'ai',c:'#a855f7'},{name:'Critic',kind:'ai',c:'#d946ef'},{name:'Worker',kind:'ai',c:'#7c6cff'}],
-      tasks:[
-        {id:uid(),title:'Design the sidebar',notes:'Icon rail, dashboard + projects, pin up to 3.',assignee:'Orchestrator',col:'done'},
-        {id:uid(),title:'Kanban board view',notes:'Trello-style columns, draggable cards, notes.',assignee:'You',col:'doing'},
-        {id:uid(),title:'Theme system',notes:'Black + purple, light toggle, a few themes.',assignee:'Critic',col:'done'},
-        {id:uid(),title:'Model switcher (Foundry/Ollama)',notes:'Let users pick cloud or local model.',assignee:'Orchestrator',col:'todo'},
-        {id:uid(),title:'Master file / learning',notes:'Track how the user works and adapt.',assignee:'Orchestrator',col:'todo'},
-        {id:uid(),title:'Review the contrast in light theme',notes:'Check WCAG on purple-on-white.',assignee:'You',col:'review'},
-      ]},
-    { id:'p2', name:'Research Notes', desc:'Competitive + technical research', members:[
-        {name:'You',kind:'human',c:'#3fce7e'},{name:'Worker',kind:'ai',c:'#7c6cff'}],
-      tasks:[
-        {id:uid(),title:'Summarise the field',notes:'Concord IQ, CertifyIQ, grounding patterns.',assignee:'Worker',col:'done'},
-        {id:uid(),title:'Foundry grounding paths',notes:'WebSearchTool vs FileSearchTool basic.',assignee:'Worker',col:'doing'},
-      ]},
-  ],
-};
-
+// No premade projects: Marshal starts empty and the user creates their own.
 function load(key, fallback){ try{ const v=localStorage.getItem(key); return v?JSON.parse(v):fallback; }catch(e){ return fallback; } }
 function save(key,val){ try{ localStorage.setItem(key,JSON.stringify(val)); }catch(e){} }
 
 const store = {
-  projects: load('marshal-projects', seed.projects),
-  pinned: load('marshal-pins', ['p1']),
+  projects: load('marshal-projects', []),
+  pinned: load('marshal-pins', []),
   provider: load('marshal-provider','foundry'),
   profileNotes: load('marshal-notes',''),
   chat: load('marshal-chat', { messages:[], source:'project' }),
@@ -441,8 +421,11 @@ function project(id){ return store.projects.find(p=>p.id===id); }
 try{
   if(!store.chat || typeof store.chat!=='object' || Array.isArray(store.chat)) store.chat={messages:[],source:'project'};
   if(!Array.isArray(store.chat.messages)) store.chat.messages=[];
-  delete store.chat.model;
+  if(['sonnet','haiku','opus','gpt-5.4','gpt-5.4-mini','gpt-5.4-nano','gpt-4.1-mini'].includes(store.chat.model)) delete store.chat.model;
   localStorage.removeItem('marshal-model'); localStorage.removeItem('marshal-enabled');
+  // Drop the old premade seed projects (and their pins) from any existing localStorage.
+  store.projects = (store.projects||[]).filter(p=>p && p.id!=='p1' && p.id!=='p2');
+  store.pinned = (store.pinned||[]).filter(x=>x!=='p1' && x!=='p2');
 }catch(e){}
 persist();
 
@@ -473,11 +456,11 @@ function render(){
   const v=$('view'), title=$('title'), actions=$('actions'); actions.innerHTML='';
   if(store.view==='dashboard'){ title.innerHTML='Dashboard'; v.innerHTML=dashboardHTML(); wireDashboard(); }
   else if(store.view==='projects'){ title.innerHTML='Projects'; actions.innerHTML=`<button class="btn sm" id="newP">${I.plus} New project</button>`; v.innerHTML=projectsHTML(); wireProjects(); $('newP').onclick=newProject; }
-  else if(store.view==='kanban'){ const p=project(store.current); title.innerHTML=`<span class="crumb">Projects / </span>${p?esc(p.name):''} <span class="crumb">/ Board</span>`; if(p) actions.innerHTML=`<div style="display:flex;gap:8px">${runTrace.length||agentsRunning?`<button class="btn sm ghost" id="traceBtn">Reasoning trace</button>`:''}<button class="btn sm ghost" id="planBtn">Plan step by step</button><button class="btn sm" id="runAgents" ${agentsRunning?'disabled':''}>${agentsRunning?('Marshal working… $'+(agentsSpend||0).toFixed(2)):'Run Marshal'}</button></div>`; const _bs=boardScroll(); v.innerHTML=p?kanbanHTML(p):'<p class="muted">Project not found.</p>'; boardScroll(_bs); if(p){ wireKanban(p); const rb=$('runAgents'); if(rb) rb.onclick=()=>runAgents(p); const pb=$('planBtn'); if(pb) pb.onclick=()=>openPlan(p); const tb=$('traceBtn'); if(tb) tb.onclick=()=>openTrace(); } }
-  else if(store.view==='chat'){ title.innerHTML='Chat'; v.innerHTML=chatHTML(); wireChat(); }
+  else if(store.view==='kanban'){ const p=project(store.current); title.innerHTML=`<span class="crumb">Projects / </span>${p?esc(p.name):''} <span class="crumb">/ Board</span>`; if(p) actions.innerHTML=`<div style="display:flex;gap:8px">${(runMeta.projectId===p.id && (runTrace.length||agentsRunning))?`<button class="btn sm ghost" id="traceBtn">Reasoning trace</button>`:''}<button class="btn sm ghost" id="planBtn">Plan step by step</button><button class="btn sm" id="runAgents" ${agentsRunning?'disabled':''}>${agentsRunning?('Marshal working… $'+(agentsSpend||0).toFixed(2)):'Run Marshal'}</button></div>`; const _bs=boardScroll(); v.innerHTML=p?kanbanHTML(p):'<p class="muted">Project not found.</p>'; boardScroll(_bs); if(p){ wireKanban(p); const rb=$('runAgents'); if(rb) rb.onclick=()=>runAgents(p); const pb=$('planBtn'); if(pb) pb.onclick=()=>openPlan(p); const tb=$('traceBtn'); if(tb) tb.onclick=()=>openTrace(); } }
+  else if(store.view==='chat'){ title.innerHTML='Chat'; v.innerHTML=chatHTML(); wireChat(); if(!modelData) loadModels().then(()=>{ if(store.view==='chat') render(); }); }
   else if(store.view==='models'){ title.innerHTML='Models'; v.innerHTML=modelsHTML(); wireModels(); if(!modelData) loadModels().then(()=>{ if(store.view==='models') render(); }); }
-  else if(store.view==='github'){ title.innerHTML='GitHub'; v.innerHTML=githubHTML(); }
-  else if(store.view==='settings'){ title.innerHTML='Settings'; v.innerHTML=settingsHTML(); wireSettings(); if(!modelData) loadModels().then(()=>{ if(store.view==='settings') render(); }); }
+  else if(store.view==='github'){ title.innerHTML='GitHub'; v.innerHTML=githubHTML(); wireGithub(); }
+  else if(store.view==='settings'){ title.innerHTML='Settings'; v.innerHTML=settingsHTML(); wireSettings(); if(!modelData) loadModels().then(()=>{ if(store.view==='settings') render(); }); if(!fcfg) loadFoundryConfig().then(()=>{ if(store.view==='settings') render(); }); }
 }
 
 function renderPins(){
@@ -550,6 +533,7 @@ async function deleteProject(id){
   if(!ok) return;
   store.projects=store.projects.filter(x=>x.id!==id);
   store.pinned=store.pinned.filter(x=>x!==id);
+  if(runMeta.projectId===id){ runTrace=[]; runMeta={}; agentsSpend=0; }   // don't leak a deleted project's run trace
   if(store.current===id){ store.current=null; store.view='projects'; }
   persist(); render(); toast('Project deleted.');
 }
@@ -667,7 +651,7 @@ async function runAgents(p, goalArg){
         hint:'The Budget Governor never exceeds this, and holds back a reserve so it can always finish.'}
     ], okText:'Run'}); goal = r && r.goal && r.goal.trim(); source = (r && r.source) || 'project'; budget = parseFloat(r && r.budget) || 2.0; }
   if(!goal){ agentsRunning = false; return; }     // cancelled
-  agentsSpend = 0; runTrace = []; runMeta = {goal, source, project:p.name, budget};
+  agentsSpend = 0; runTrace = []; runMeta = {goal, source, project:p.name, projectId:p.id, budget};
   const runStart = Date.now();
   render();
   const reflect = () => { persist(); if(store.current===p.id && store.view==='kanban') render(); };
@@ -693,7 +677,16 @@ async function runAgents(p, goalArg){
       default: return;
     }
     runTrace.push({t:dt, type:m.type, label});
-    if($('trace').classList.contains('open')) renderTrace();
+    if($('trace').classList.contains('open')){
+      const terminal = (m.type==='done'||m.type==='refused'||m.type==='error');
+      const list = $('trace').querySelector('.trace-list');
+      if(list && runTrace.length>1 && !terminal){
+        // Append just the new row (O(1)) and follow the stream, instead of rebuilding the whole drawer.
+        const e=runTrace[runTrace.length-1]; const div=document.createElement('div');
+        div.className='trace-row trace-'+e.type; div.innerHTML='<span class="trace-t">+'+e.t+'s</span><span class="trace-l">'+esc(e.label)+'</span>';
+        list.appendChild(div); const dr=$('trace').querySelector('.trace-draw'); if(dr) dr.scrollTop=dr.scrollHeight;
+      } else renderTrace();   // first row, or terminal event (refresh header, spend, export button)
+    }
   };
   const am = activeFoundryModel();
   const tag = am ? '(Foundry · '+am+')' : '(Microsoft Foundry)';
@@ -733,7 +726,6 @@ async function runAgents(p, goalArg){
     let m; try{ m=JSON.parse(ev.data); }catch(_){ return; }
     gotAnything=true;
     if(m.budget && m.budget.spent_usd!=null){ agentsSpend=m.budget.spent_usd; }   // live spend for the working button
-    recordTrace(m);
     switch(m.type){
       case 'decomposed':
         (m.subtasks||[]).forEach(s=>{ const t={id:uid(),title:s.title||s.id,notes:'Scoped by the orchestrator '+tag+'.',assignee:'Orchestrator',col:'todo'}; p.tasks.push(t); idMap[s.id]=t.id; });
@@ -748,6 +740,7 @@ async function runAgents(p, goalArg){
       case 'refused': finished=true; agentsRunning=false; render(); uiInfo({title:'Marshal declined', body:m.reason||'The request was refused.'}); break;
       case 'error': finished=true; agentsRunning=false; render(); toast('Marshal error: '+(m.message||'unknown')); break;
     }
+    recordTrace(m);   // after the switch, so runMeta (answer/spend) is set before the terminal trace render
   };
   ws.onclose = () => { if(!finished){ if(gotAnything) interruptRun(); else toast('Marshal backend closed the connection. Is the server running with WebSocket support?'); } agentsRunning=false; reflect(); };
   ws.onerror = () => { toast('Marshal connection error. Is the backend running?'); agentsRunning=false; reflect(); };
@@ -822,8 +815,9 @@ function openCard(p,t){
       <div style="flex:1"><label>Assignee</label><select id="f-assignee">${opts}</select></div>
       <div style="flex:1"><label>Column</label><select id="f-col">${colOpts}</select></div>
     </div>
-    <div class="modal-foot"><button class="btn ghost sm" id="f-del">Delete</button><button class="btn sm" id="f-save">Save</button></div>`;
+    <div class="modal-foot"><button class="btn ghost sm" id="f-del">Delete</button>${(ghState&&ghState.connected&&repoLinks())?`<button class="btn ghost sm" id="f-push">${I.github} Push to GitHub</button>`:''}<button class="btn sm" id="f-save">Save</button></div>`;
   const _wo=$('scrim').classList.contains('open'); $('scrim').classList.add('open'); afterModalOpen(_wo);
+  const fpush=$('f-push'); if(fpush) fpush.onclick=()=>githubPushCard(p,t);
   $('f-save').onclick=()=>{ t.title=$('f-title').value.trim()||t.title; t.notes=$('f-notes').value; t.assignee=$('f-assignee').value; t.col=$('f-col').value; persist(); closeModal(); render(); };
   $('f-del').onclick=()=>{ p.tasks=p.tasks.filter(x=>x.id!==t.id); persist(); closeModal(); render(); };
   $('f-ai').onclick=async()=>{ const btn=$('f-ai'); const old=btn.innerHTML; btn.disabled=true; btn.innerHTML=`${I.spark} Thinking…`; await new Promise(r=>setTimeout(r,500)); $('f-notes').value=aiSuggestNotes({title:$('f-title').value||t.title}, p); btn.disabled=false; btn.innerHTML=old; };
@@ -909,7 +903,7 @@ function afterModalOpen(wasOpen){ if(!wasOpen) _lastFocus=document.activeElement
 function overlayCapture(){ _lastFocus=document.activeElement; }
 function overlayRestore(){ const lf=_lastFocus; _lastFocus=null; if(lf&&lf.focus){ try{ lf.focus(); }catch(e){} } }
 // Keep keyboard focus inside an open drawer after each re-render (drawers re-render on every step).
-function keepFocusIn(el){ if(el && el.classList.contains('open') && !el.contains(document.activeElement)){ const f=_focusablesIn(el); if(f.length) f[0].focus(); } }
+function keepFocusIn(el){ if(el && el.classList.contains('open') && !el.contains(document.activeElement) && (_activeOverlay()||{}).el===el){ const f=_focusablesIn(el); if(f.length) f[0].focus(); } }
 function showModal(html){ const wo=$('scrim').classList.contains('open'); $('modal').className='modal'; $('modal').innerHTML=html; $('scrim').classList.add('open'); afterModalOpen(wo); }
 function closeModal(result){ $('scrim').classList.remove('open'); const r=_modalResolve; _modalResolve=null; const lf=_lastFocus; _lastFocus=null; if(lf&&lf.focus){ try{ lf.focus(); }catch(e){} } if(r) r(result); }
 // The topmost open overlay (modal takes priority, then planner, then wizard) and how to close it.
@@ -917,7 +911,7 @@ function _activeOverlay(){
   if($('scrim').classList.contains('open')) return {el:$('modal'), close:()=>closeModal(null)};
   if($('plan').classList.contains('open')) return {el:$('plan'), close:closePlan};
   if($('trace').classList.contains('open')) return {el:$('trace'), close:closeTrace};
-  if($('wizard').classList.contains('open')) return {el:$('wizard'), close:()=>closeWizard()};
+  if($('wizard').classList.contains('open')) return {el:$('wizard'), close:()=>closeWizard(true)};
   return null;
 }
 $('scrim').addEventListener('click',e=>{ if(e.target===$('scrim')) closeModal(null); });
@@ -935,16 +929,50 @@ function uiConfirm({title, body='', okText='Confirm', danger=false}){ return new
 
 function uiInfo({title, body='', okText='Got it'}){ return new Promise(res=>{ _modalResolve=res; showModal(`<h3>${esc(title)}</h3>${body?`<p class="h" style="color:var(--muted);margin:0 0 16px;font-size:13px">${esc(body)}</p>`:''}<div class="modal-foot" style="justify-content:flex-end"><button class="btn sm" id="m-ok">${esc(okText)}</button></div>`); $('m-ok').onclick=()=>closeModal(true); }); }
 
-function uiPrompt({title, fields, okText='Save'}){ return new Promise(res=>{ _modalResolve=res; const body=fields.map(f=>{ const val=esc(f.value||''); const ph=esc(f.placeholder||''); let inp; if(f.select){ inp=`<select id="mp-${f.id}">`+f.options.map(o=>`<option value="${esc(o.value)}" ${o.value===f.value?'selected':''} ${o.disabled?'disabled':''}>${esc(o.label)}</option>`).join('')+`</select>`; } else { inp = f.multiline ? `<textarea id="mp-${f.id}" placeholder="${ph}">${val}</textarea>` : `<input id="mp-${f.id}" type="text" value="${val}" placeholder="${ph}">`; } const hint=f.hint?`<div class="muted" style="font-size:12px;margin-top:5px">${esc(f.hint)}</div>`:''; return `<div class="field"><label>${esc(f.label)}</label>${inp}${hint}</div>`; }).join(''); showModal(`<h3>${esc(title)}</h3>${body}<div class="modal-foot"><button class="btn ghost sm" id="m-cancel">Cancel</button><button class="btn sm" id="m-ok">${esc(okText)}</button></div>`); const submit=()=>{ const out={}; fields.forEach(f=>{ const v=$('mp-'+f.id).value; out[f.id]=(f.multiline||f.select)?v:v.trim(); }); closeModal(out); }; $('m-ok').onclick=submit; $('m-cancel').onclick=()=>closeModal(null); fields.forEach(f=>{ if(!f.multiline && !f.select){ const el=$('mp-'+f.id); if(el) el.addEventListener('keydown',ev=>{ if(ev.key==='Enter'){ ev.preventDefault(); submit(); } }); } }); const fe=$('mp-'+fields[0].id); if(fe){ fe.focus(); } }); }
+function uiPrompt({title, fields, okText='Save'}){ return new Promise(res=>{ _modalResolve=res; const body=fields.map(f=>{ const val=esc(f.value||''); const ph=esc(f.placeholder||''); let inp; if(f.select){ inp=`<select id="mp-${f.id}">`+f.options.map(o=>`<option value="${esc(o.value)}" ${o.value===f.value?'selected':''} ${o.disabled?'disabled':''}>${esc(o.label)}</option>`).join('')+`</select>`; } else { inp = f.multiline ? `<textarea id="mp-${f.id}" placeholder="${ph}">${val}</textarea>` : `<input id="mp-${f.id}" type="${f.password?'password':'text'}" value="${val}" placeholder="${ph}" ${f.password?'autocomplete="off"':''}>`; } const hint=f.hint?`<div class="muted" style="font-size:12px;margin-top:5px">${esc(f.hint)}</div>`:''; return `<div class="field"><label>${esc(f.label)}</label>${inp}${hint}</div>`; }).join(''); showModal(`<h3>${esc(title)}</h3>${body}<div class="modal-foot"><button class="btn ghost sm" id="m-cancel">Cancel</button><button class="btn sm" id="m-ok">${esc(okText)}</button></div>`); const submit=()=>{ const out={}; fields.forEach(f=>{ const v=$('mp-'+f.id).value; out[f.id]=(f.multiline||f.select)?v:v.trim(); }); closeModal(out); }; $('m-ok').onclick=submit; $('m-cancel').onclick=()=>closeModal(null); fields.forEach(f=>{ if(!f.multiline && !f.select){ const el=$('mp-'+f.id); if(el) el.addEventListener('keydown',ev=>{ if(ev.key==='Enter'){ ev.preventDefault(); submit(); } }); } }); const fe=$('mp-'+fields[0].id); if(fe){ fe.focus(); } }); }
 
 // ===== Settings =====
 const THEMES=[['dark-purple','Dark purple'],['light-purple','Light purple'],['midnight','Midnight'],['neon','Neon'],['mono','Mono']];
+// ===== Foundry connection (D) — connect your own project at runtime via /config and /connect =====
+let fcfg=null;
+async function loadFoundryConfig(force){
+  if(fcfg && !force) return fcfg;
+  try{ const ctl=new AbortController(); const to=setTimeout(()=>ctl.abort(),8000); const r=await fetch('/config',{signal:ctl.signal}); clearTimeout(to); fcfg=await r.json(); }
+  catch(e){ fcfg={error:String((e&&e.message)||e)}; }
+  return fcfg;
+}
+function foundryStatusHTML(){
+  if(!fcfg) return '<span class="muted">checking…</span>';
+  if(fcfg.error) return '<span style="color:#e0607e">backend unreachable</span>';
+  if(!fcfg.connected) return '<span style="color:#e0607e">not connected</span>';
+  if(fcfg.auth_ok) return `<span style="color:var(--done)">connected · ${(fcfg.models||[]).length} deployments</span>`;
+  return '<span style="color:var(--review)">endpoint set, not signed in (run az login)</span>';
+}
+async function connectFoundry(){
+  const cur=fcfg||{};
+  const r=await uiPrompt({title:'Connect Microsoft Foundry', fields:[
+    {id:'endpoint',label:'Project endpoint',value:cur.project_endpoint||'',placeholder:'https://<resource>.services.ai.azure.com/api/projects/<project>',hint:'From the Foundry portal. Sign in first in your terminal with:  az login'},
+    {id:'worker',label:'Reasoning model (optional)',value:cur.worker_model||'',placeholder:'leave blank to auto-pick',hint:'A deployment name from your project; blank picks the first chat model.'}
+  ], okText:'Connect'});
+  if(!r) return;
+  const ep=(r.endpoint||'').trim(); if(!ep){ toast('Enter your project endpoint.'); return; }
+  toast('Connecting to Foundry…');
+  try{
+    const res=await fetch('/connect',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({project_endpoint:ep, worker_model:(r.worker||'').trim()})});
+    const data=await res.json();
+    if(!data.ok){ uiInfo({title:'Could not connect', body:(data.error||'Connection failed.')+(data.auth_hint?('  '+data.auth_hint):'')}); return; }
+    toast('Connected. '+(data.models||[]).length+' deployment(s) available.');
+    fcfg=null; modelData=null; await loadFoundryConfig(true); await loadModels(true); await loadConfig(); render();
+  }catch(e){ uiInfo({title:'Could not connect', body:'Could not reach the backend.'}); }
+}
 function settingsHTML(){
   return `<div class="settings-wrap"><div class="panel"><h2>Appearance</h2><p class="h">Pick a theme. The toggle in the sidebar flips light/dark.</p>
       <div class="row"><div>Theme</div><select id="s-theme">${THEMES.map(t=>`<option value="${t[0]}" ${store.theme===t[0]?'selected':''}>${t[1]}</option>`).join('')}</select></div></div>
-    <div class="panel"><h2>Model</h2><p class="h">Marshal runs on Microsoft Foundry (Azure). The reasoning loop uses the deployment configured on the server. Ollama is an optional local add-on. Browse and inspect deployments on the Models page.</p>
-      <div class="row"><div>In use now</div><div style="text-align:right;font-size:13px"><strong>${esc(activeFoundryModel()||'connecting…')}</strong><div class="muted">Microsoft Foundry</div></div></div>
-      <div class="row" style="border-top:0;padding-top:0"><div class="muted">Browse deployments</div><button class="btn sm ghost" onclick="nav('models')">Open Models</button></div></div>
+    <div class="panel"><h2>Microsoft Foundry</h2><p class="h">Marshal's reasoning runs on your Foundry project, and your model library is whatever you have deployed there. Sign in once in your terminal with <code>az login</code>, then connect your project.</p>
+      <div class="row"><div>Status</div><div style="text-align:right;font-size:13px">${foundryStatusHTML()}</div></div>
+      <div class="row"><div>Project endpoint</div><div class="muted" style="font-size:12px;max-width:62%;text-align:right;word-break:break-all">${esc((fcfg&&fcfg.project_endpoint)||'not connected')}</div></div>
+      <div class="row"><div>Reasoning model</div><div style="text-align:right;font-size:13px">${esc((fcfg&&fcfg.worker_model)||activeFoundryModel()||'—')}</div></div>
+      <div class="row" style="border-top:0;padding-top:0;justify-content:flex-end;gap:8px"><button class="btn sm ghost" onclick="nav('models')">Open Models</button><button class="btn sm" id="s-connect">${(fcfg&&fcfg.connected)?'Change connection':'Connect Foundry'}</button></div></div>
     <div class="panel"><h2>Marshal learns you</h2><p class="h">Marshal keeps a master file of how you like to work and adapts to it. It fills in as you go, and you can edit it directly.</p>
       <div class="row"><div class="muted">Learned so far</div><div style="text-align:right;font-size:13px">theme <strong>${esc(store.theme)}</strong> · Microsoft Foundry${activeFoundryModel()?' · '+esc(activeFoundryModel()):''}</div></div>
       <div style="padding:12px 0"><label for="s-notes">Master file: what Marshal remembers about you</label>
@@ -959,6 +987,7 @@ function wireSettings(){
   const ns=$('s-notes-save'); if(ns) ns.onclick=()=>{ store.profileNotes=($('s-notes').value||'').slice(0,8000); save('marshal-notes',store.profileNotes); ns.textContent='Saved'; setTimeout(()=>{ns.textContent='Save master file';},1200); };
   const md=$('s-notes-md'); if(md) md.onclick=()=>{ store.profileNotes=$('s-notes').value; save('marshal-notes',store.profileNotes); downloadMasterFile(); };
   const su=$('s-setup'); if(su) su.onclick=()=>openWizard();
+  const sc=$('s-connect'); if(sc) sc.onclick=()=>connectFoundry();
 }
 function downloadMasterFile(){
   const body = (store.profileNotes||'').trim() || '(empty, Marshal has not learned anything yet)';
@@ -976,18 +1005,25 @@ function downloadMasterFile(){
 // ===== Chat (talk to a model directly; runs locally on your Claude subscription) =====
 let chatBusy=false;
 function chatGroundProject(){ return project(store.current) || project((store.pinned||[])[0]) || store.projects[0] || null; }
+// The model library is whatever you have deployed in your Foundry project (live from /models).
+function chatModels(){ try{ return ((modelData&&modelData.foundry&&modelData.foundry.deployments)||[]).filter(d=>d.kind!=='embedding'); }catch(e){ return []; } }
 function chatHTML(){
   const m=store.chat;
   const src=m.source||'project';
   const gp=chatGroundProject();
   const groundSel=`<label class="ground-pick" title="What Marshal grounds its answers on">${I.book||''}<select id="chat-source">`+
     groundOptions().map(o=>`<option value="${o.value}" ${o.value===src?'selected':''} ${o.disabled?'disabled':''}>${esc(o.label)}</option>`).join('')+`</select></label>`;
+  const models=chatModels(); const names=models.map(d=>d.name);
+  const curModel = (m.model && names.includes(m.model)) ? m.model : (activeFoundryModel()||'');
+  const modelSel = models.length ? `<label class="ground-pick" title="Model (your Foundry deployments)">${I.layers||''}<select id="chat-model">`+
+    models.map(d=>`<option value="${esc(d.name)}" ${d.name===curModel?'selected':''}>${esc(d.model||d.name)}</option>`).join('')+`</select></label>` : '';
   const msgs=m.messages.length
     ? m.messages.map(msgHTML).join('')
     : `<div class="chat-empty"><div class="chat-logo">${WMARK()}</div><div style="font-size:15px;color:var(--ink);margin-bottom:6px;font-weight:600">Chat with Marshal</div>Ask anything to get started. Runs on Microsoft Foundry.${src==='project'&&gp?'<br>Grounding on <b>'+esc(gp.name)+'</b>.':''}</div>`;
   return `<div class="chat-wrap">
     <div class="chat-head">
       <span class="pill">Microsoft Foundry</span>
+      ${modelSel}
       ${groundSel}
       <span style="flex:1"></span>
       <button class="btn ghost sm" id="chat-clear">Clear</button>
@@ -1004,6 +1040,7 @@ function wireChat(){
   const box=$('chat-msgs'); if(box) box.scrollTop=box.scrollHeight;
   const clr=$('chat-clear'); if(clr) clr.onclick=async()=>{ if(!store.chat.messages.length) return; const ok=await uiConfirm({title:'Clear chat?',body:'This removes the current conversation.',okText:'Clear',danger:true}); if(ok){ store.chat.messages=[]; persist(); render(); } };
   const sel=$('chat-source'); if(sel) sel.onchange=()=>{ store.chat.source=sel.value; persist(); render(); };
+  const msel=$('chat-model'); if(msel) msel.onchange=()=>{ store.chat.model=msel.value; persist(); toast('Now using '+msel.value+'.'); };
   const ta=$('chat-text'), send=$('chat-send');
   if(send) send.onclick=()=>sendChat();
   if(ta){ ta.addEventListener('keydown',e=>{ if(e.key==='Enter' && !e.shiftKey){ e.preventDefault(); sendChat(); } }); ta.focus(); }
@@ -1022,14 +1059,35 @@ async function sendChat(){
   if(box){ const tip=document.createElement('div'); tip.className='msg ai'; tip.id='chat-typing'; tip.innerHTML='<span class="who">M</span><div class="bubble typing">Marshal is thinking…</div>'; box.appendChild(tip); box.scrollTop=box.scrollHeight; }
   let reply, citations=[], groundLabel='';
   try{
-    const res=await fetch('/chat',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({message:text, history, source, knowledge, profile:(store.profileNotes||'').slice(0,6000)})});
+    const names=chatModels().map(d=>d.name); const model=(store.chat.model && names.includes(store.chat.model)) ? store.chat.model : '';
+    const res=await fetch('/chat',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({message:text, history, source, knowledge, model, profile:(store.profileNotes||'').slice(0,6000)})});
     const data=await res.json();
     reply = deEm(data.reply || data.error || '(no reply)');
     citations = data.citations || []; groundLabel = data.groundLabel || '';
   }catch(e){ reply='Could not reach the chat backend. Is the server running?'; }
+  await typeReply(reply);   // stream the reply in, instead of dropping it instantly
   store.chat.messages.push({role:'ai',text:reply,citations,groundLabel,groundProject:gp?gp.id:''});
   chatBusy=false; persist();
   if(store.view==='chat') render();
+}
+// Typewriter the reply into the pending "thinking" bubble, so it feels generated, not pasted.
+function typeReply(text){
+  return new Promise(res=>{
+    const tip=$('chat-typing'), box=$('chat-msgs');
+    if(!tip){ res(); return; }
+    tip.removeAttribute('id'); tip.innerHTML='<span class="who">M</span><div class="bubble"></div>';
+    const bubble=tip.querySelector('.bubble');
+    let reduce=false; try{ reduce=matchMedia('(prefers-reduced-motion: reduce)').matches; }catch(e){}
+    if(reduce || !text){ bubble.textContent=text||''; if(box) box.scrollTop=box.scrollHeight; res(); return; }
+    // Time-based so it always completes in ~dur, even if a background tab throttles the interval.
+    const dur=Math.min(3000, Math.max(700, text.length*10)); const start=Date.now();
+    const iv=setInterval(()=>{
+      const p=Math.min(1,(Date.now()-start)/dur);
+      bubble.textContent=text.slice(0, Math.ceil(p*text.length));
+      if(box) box.scrollTop=box.scrollHeight;
+      if(p>=1){ clearInterval(iv); res(); }
+    }, 16);
+  });
 }
 
 // ===== Models — live data from the backend (real Foundry deployments + local Ollama). =====
@@ -1088,28 +1146,83 @@ function wireModels(){ document.querySelectorAll('[data-prov]').forEach(b=> b.on
 // GitHub's own editors (github.dev for quick edits, Codespaces for heavier work).
 function repoSlug(){ return (store.repo||'').trim().replace(/^https?:\/\/github\.com\//i,'').replace(/\.git$/i,'').replace(/^\/+|\/+$/g,''); }
 function repoLinks(){ const r=repoSlug(); if(!/^[\w.-]+\/[\w.-]+$/.test(r)) return null; return { slug:r, gh:'https://github.com/'+r, dev:'https://github.dev/'+r, codespaces:'https://codespaces.new/'+r, blob:(path)=>'https://github.com/'+r+'/blob/main/'+(path||'').replace(/^\/+/,'').split('/').map(encodeURIComponent).join('/') }; }
+// GitHub integration state (E): connection, repo list, and the linked repo's file tree.
+let ghState=null, ghRepos=null, ghTree=null;
+async function loadGithubStatus(force){ if(ghState && !force) return ghState; try{ const r=await fetch('/github/status'); ghState=await r.json(); }catch(e){ ghState={connected:false,error:String(e)}; } return ghState; }
+async function loadGithubRepos(force){ if(ghRepos && !force) return ghRepos; try{ const r=await fetch('/github/repos'); const d=await r.json(); ghRepos=d.error?{error:d.error}:(d.repos||[]); }catch(e){ ghRepos={error:String(e)}; } return ghRepos; }
+async function loadGithubTree(force){ const L=repoLinks(); if(!L){ ghTree=null; return; } if(ghTree && ghTree._repo===L.slug && !force) return ghTree; try{ const r=await fetch('/github/tree',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({repo:L.slug})}); const d=await r.json(); d._repo=L.slug; ghTree=d; }catch(e){ ghTree={error:String(e),_repo:L.slug}; } return ghTree; }
+function githubConnect(){
+  uiPrompt({title:'Connect GitHub', fields:[{id:'token',label:'Fine-grained personal access token',password:true,placeholder:'github_pat_…',hint:'GitHub → Settings → Developer settings → Fine-grained tokens. Permission: Contents (Read and write). Stored locally, never committed.'}], okText:'Connect'}).then(async r=>{
+    if(!r) return; const token=(r.token||'').trim(); if(!token){ toast('Paste your token.'); return; }
+    toast('Connecting to GitHub…');
+    try{ const res=await fetch('/github/connect',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({token})}); const d=await res.json();
+      if(!d.ok){ uiInfo({title:'Could not connect', body:(d.error||'Connection failed.')+(d.hint?('  '+d.hint):'')}); return; }
+      toast('Connected as @'+d.login+'.'); ghState=null; ghRepos=null; await loadGithubStatus(true); render();
+    }catch(e){ uiInfo({title:'Could not connect', body:'Could not reach the backend.'}); }
+  });
+}
+function githubDisconnect(){ fetch('/github/disconnect',{method:'POST'}).then(()=>{ ghState=null; ghRepos=null; ghTree=null; toast('GitHub disconnected.'); render(); }).catch(()=>toast('Could not reach the backend.')); }
+function githubPickRepo(full){ store.repo=full; save('marshal-repo',store.repo); ghTree=null; toast('Linked '+full+'.'); render(); }
+async function githubViewFile(path){ const L=repoLinks(); if(!L) return; toast('Loading '+path+'…');
+  try{ const r=await fetch('/github/file',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({repo:L.slug, path})}); const d=await r.json();
+    if(d.error){ uiInfo({title:'Could not read file', body:d.error}); return; }
+    $('modal').className='modal wide'; $('modal').innerHTML='<h3 style="font-family:ui-monospace,Menlo,Consolas,monospace;font-size:14px">'+esc(path)+'</h3><textarea class="code-edit" readonly spellcheck="false">'+esc(d.content||'')+'</textarea><div class="modal-foot" style="justify-content:flex-end;margin-top:12px"><button class="btn sm" id="m-ok">Close</button></div>'; const wo=$('scrim').classList.contains('open'); $('scrim').classList.add('open'); afterModalOpen(wo); $('m-ok').onclick=()=>closeModal();
+  }catch(e){ uiInfo({title:'Could not read file', body:'Backend error.'}); }
+}
 function githubHTML(){
-  const L=repoLinks();
-  if(!L){
-    return `<p class="sub">Link a GitHub repository so Marshal can open it for real editing and link cards straight to their files.</p>
-     ${emptyState(I.github,'Link a repository','Enter your repo as owner/repo (or paste its GitHub URL). Marshal builds deep links to open it in github.dev or a Codespace, no sign-in needed.','Link a repository','onclick="githubLink()"')}
-     <div class="panel" style="margin-top:18px"><h2>Coming later</h2><p class="h">Full GitHub sign-in to list your repos and read the file tree, so file suggestions and code drafts ground on real files instead of plausible paths, and finished cards become branches and pull requests.</p></div>`;
+  if(!ghState){ loadGithubStatus().then(()=>{ if(store.view==='github') render(); }); return `<p class="sub">Checking GitHub connection…</p>`; }
+  if(!ghState.connected){
+    return `<p class="sub">Connect GitHub so Marshal can list your repositories, pull files into cards, and push changes back.</p>
+     ${emptyState(I.github,'Connect GitHub','Create a fine-grained personal access token with Contents: Read and write, then paste it in. Marshal stores it locally and never commits it.','Connect with a token','onclick="githubConnect()"')}
+     <div class="panel" style="margin-top:18px"><h2>How to create a token</h2><p class="h">On GitHub: Settings → Developer settings → Fine-grained tokens → Generate new token. Repository access: the repos you want Marshal to use. Permissions: Contents → Read and write. Generate it, copy it, and paste it into Connect above.</p></div>`;
   }
-  return `<p class="sub">Linked repository. Open it for real editing, or jump straight into a cloud dev environment.</p>
-   <div class="panel"><div class="row" style="align-items:center"><div style="flex:1;min-width:0"><strong style="font-family:ui-monospace,Menlo,Consolas,monospace">${esc(L.slug)}</strong><div class="muted">Marshal’s inline editor is a scratch / AI-draft surface. For real edits, open the repo in GitHub’s editors below.</div></div>
-     <button class="btn ghost sm" onclick="githubLink()">Change</button><button class="btn ghost sm" onclick="githubUnlink()">Unlink</button></div>
-     <div style="display:flex;gap:10px;flex-wrap:wrap;margin-top:14px">
-       <a class="btn sm" href="${L.dev}" target="_blank" rel="noopener">${I.github} Open in github.dev</a>
-       <a class="btn sm" href="${L.codespaces}" target="_blank" rel="noopener">${I.spark} Open in Codespaces</a>
-       <a class="btn ghost sm" href="${L.gh}" target="_blank" rel="noopener">View on GitHub</a></div></div>
-   <div class="panel" style="margin-top:18px"><h2>How editing works</h2>
-     <div class="row"><div><strong>github.dev</strong><div class="muted">Full VS Code in the browser, instant and free. Best for quick edits.</div></div></div>
-     <div class="row"><div><strong>Codespaces</strong><div class="muted">A full cloud dev environment with a terminal to run and test. Best for heavier work.</div></div></div>
-     <div class="row"><div><strong>Per-file links</strong><div class="muted">Files listed on a card link straight to their page on GitHub.</div></div></div>
-   </div>`;
+  const L=repoLinks();
+  let body=`<div class="panel"><div class="row" style="align-items:center"><div style="flex:1"><strong>Connected as @${esc(ghState.login||'')}</strong><div class="muted">Marshal can list your repos, pull files, and push changes from cards.</div></div><button class="btn ghost sm" onclick="githubDisconnect()">Disconnect</button></div></div>`;
+  if(!ghRepos){ loadGithubRepos().then(()=>{ if(store.view==='github') render(); }); body+=`<div class="muted" style="margin:16px 2px">Loading repositories…</div>`; }
+  else if(ghRepos.error){ body+=`<div class="muted" style="margin:16px 2px">Could not list repositories: ${esc(ghRepos.error)}</div>`; }
+  else { body+=`<div class="panel" style="margin-top:18px"><h2>Your repositories <span class="muted" style="font-size:12px">(${ghRepos.length})</span></h2><div class="filelist" style="max-height:300px;overflow:auto">`+
+    ghRepos.map(r=>`<div class="fileitem">${I.github}<button class="fopen" data-ghrepo="${esc(r.full_name)}">${esc(r.full_name)}</button>${r.private?'<span class="pill" style="font-size:10px">private</span>':''}${r.can_push?'':'<span class="pill" style="font-size:10px;color:var(--muted);background:var(--surface2)">read-only</span>'}${store.repo===r.full_name?'<span class="pill" style="font-size:10px">linked</span>':''}</div>`).join('')+
+    `</div></div>`; }
+  if(L){
+    body+=`<div class="panel" style="margin-top:18px"><div class="row" style="align-items:center"><div style="flex:1;min-width:0"><strong style="font-family:ui-monospace,Menlo,Consolas,monospace">${esc(L.slug)}</strong><div class="muted">Linked. Open in a browser editor, or browse and pull files below. Push changes from a card's files.</div></div><button class="btn ghost sm" onclick="githubUnlink()">Unlink</button></div>
+      <div style="display:flex;gap:10px;flex-wrap:wrap;margin-top:12px"><a class="btn sm" href="${L.dev}" target="_blank" rel="noopener">${I.github} github.dev</a><a class="btn sm" href="${L.codespaces}" target="_blank" rel="noopener">${I.spark} Codespaces</a><a class="btn ghost sm" href="${L.gh}" target="_blank" rel="noopener">View on GitHub</a></div></div>`;
+    if(!ghTree || ghTree._repo!==L.slug){ loadGithubTree().then(()=>{ if(store.view==='github') render(); }); body+=`<div class="muted" style="margin:16px 2px">Loading file tree…</div>`; }
+    else if(ghTree.error){ body+=`<div class="muted" style="margin:16px 2px">Could not read the file tree: ${esc(ghTree.error)}</div>`; }
+    else { body+=`<div class="panel" style="margin-top:18px"><h2>Files <span class="muted" style="font-size:12px">(${(ghTree.files||[]).length} on ${esc(ghTree.ref||'')})</span></h2><div class="filelist" style="max-height:340px;overflow:auto">`+
+      (ghTree.files||[]).slice(0,500).map(f=>`<div class="fileitem">${I.file}<button class="fopen" data-ghfile="${esc(f)}">${esc(f)}</button></div>`).join('')+
+      `</div>${ghTree.truncated?'<div class="muted" style="font-size:11px;margin-top:8px">Tree truncated by GitHub (very large repo).</div>':''}</div>`; }
+  } else {
+    body+=`<div class="muted" style="margin:16px 2px">Pick a repository above to link it, browse its files, and enable push from cards.</div>`;
+  }
+  return `<p class="sub">Connected to GitHub. Pick a repository, browse and pull files, and push changes from cards.</p>${body}`;
+}
+function wireGithub(){
+  document.querySelectorAll('[data-ghrepo]').forEach(b=> b.onclick=()=>githubPickRepo(b.dataset.ghrepo));
+  document.querySelectorAll('[data-ghfile]').forEach(b=> b.onclick=()=>githubViewFile(b.dataset.ghfile));
 }
 function githubLink(){ uiPrompt({title:'Link a GitHub repository', fields:[{id:'repo',label:'Repository',value:store.repo||'',placeholder:'owner/repo',hint:'e.g. octocat/hello-world, or paste the full GitHub URL.'}], okText:'Link'}).then(r=>{ if(!r) return; const v=(r.repo||'').trim(); const slug=v.replace(/^https?:\/\/github\.com\//i,'').replace(/\.git$/i,'').replace(/^\/+|\/+$/g,''); if(!/^[\w.-]+\/[\w.-]+$/.test(slug)){ toast('Enter the repo as owner/repo.'); return; } store.repo=slug; save('marshal-repo',store.repo); toast('Linked '+slug+'.'); render(); }); }
-function githubUnlink(){ store.repo=''; save('marshal-repo',''); toast('Repository unlinked.'); render(); }
+function githubUnlink(){ store.repo=''; save('marshal-repo',''); ghTree=null; toast('Repository unlinked.'); render(); }
+// Push a card's drafted files to a branch on the linked repo, ready for a pull request.
+async function githubPushCard(p, t){
+  const L=repoLinks(); if(!L){ toast('Link a repo first, on the GitHub tab.'); return; }
+  if(!ghState || !ghState.connected){ toast('Connect GitHub first, on the GitHub tab.'); return; }
+  const files=(t.files||[]).filter(f=>f.path && f.content!=null && f.content!=='').map(f=>({path:f.path, content:f.content}));
+  if(!files.length){ uiInfo({title:'Nothing to push', body:'This card has no files with content yet. Open a file and draft or paste code into it first.'}); return; }
+  const slug=(t.title||'update').toLowerCase().replace(/[^a-z0-9]+/g,'-').replace(/^-|-$/g,'').slice(0,40)||'update';
+  const r=await uiPrompt({title:'Push to GitHub', fields:[
+    {id:'branch',label:'Branch',value:'marshal/'+slug,hint:'A new or existing branch. Your default branch stays untouched.'},
+    {id:'message',label:'Commit message',value:'Marshal: '+(t.title||'update')}
+  ], okText:'Push '+files.length+' file(s)'});
+  if(!r) return;
+  toast('Pushing '+files.length+' file(s) to GitHub…');
+  try{
+    const res=await fetch('/github/push',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({repo:L.slug, files, branch:(r.branch||'').trim(), message:(r.message||'').trim()})});
+    const d=await res.json();
+    if(!d.ok){ uiInfo({title:'Push failed', body:d.error||'Failed.'}); return; }
+    showModal('<h3>Pushed to GitHub</h3><p class="h" style="color:var(--muted);margin:0 0 14px">Wrote '+(d.written||[]).length+' file(s) to branch <strong>'+esc(d.branch)+'</strong> on '+esc(L.slug)+'.</p><div class="modal-foot" style="justify-content:flex-end;gap:8px"><a class="btn sm" href="'+esc(d.compare_url)+'" target="_blank" rel="noopener">Open pull request</a><button class="btn ghost sm" id="m-ok">Close</button></div>');
+    const wo=$('scrim').classList.contains('open'); $('scrim').classList.add('open'); afterModalOpen(wo); $('m-ok').onclick=()=>closeModal();
+  }catch(e){ uiInfo({title:'Push failed', body:'Could not reach the backend.'}); }
+}
 
 // ===== Onboarding wizard (first-run; re-runnable from Settings) =====
 const WIZ_PROMPT = "I'm setting up a new AI workspace called Marshal and want to bring over what you already know about me. Summarise, as concise markdown bullets: who I am and my role; my domains and expertise; how I like to communicate and receive answers; the projects and topics I'm working on; the tools and stacks I use; and any standing preferences I've given you. Be specific and factual; omit anything you're unsure about.";
@@ -1181,6 +1294,7 @@ function renderTrace(){
     <div style="display:flex;align-items:center;gap:10px;margin-bottom:14px"><span class="pmark">${WMARK()}</span><span style="font-size:15px;font-weight:650;color:var(--ink)">Reasoning trace</span><span style="flex:1"></span>${(runTrace.length&&runMeta.answer!=null)?'<button class="btn ghost sm" data-tr="export">Export report</button>':''}<button class="iconbtn" data-tr="close" title="Close">✕</button></div>
     ${head}<div class="trace-list">${rows}</div></div>`;
   w.querySelectorAll('[data-tr]').forEach(b=> b.onclick=()=>{ const a=b.dataset.tr; if(a==='close') closeTrace(); else if(a==='export') exportRunReport(); });
+  if(agentsRunning){ const dr=w.querySelector('.trace-draw'); if(dr) dr.scrollTop=dr.scrollHeight; }   // follow the live stream
   keepFocusIn($('trace'));
 }
 function exportRunReport(){
@@ -1291,6 +1405,7 @@ render();
 loadConfig().then(()=>{ if(store.view==='chat') render(); });
 // Load real model data so the board can stamp cards with the model actually in use.
 loadModels().then(()=>{ if(store.view==='models') render(); });
+loadGithubStatus();   // so a connected GitHub repo enables "Push to GitHub" on cards
 if(!store.onboarded) openWizard();
 </script>
 </body>

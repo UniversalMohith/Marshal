@@ -1,4 +1,4 @@
-"""Central configuration for Hackathon Jarvis.
+"""Central configuration for Marshal.
 
 Values are read from environment variables (see .env.example) with sensible
 defaults, so the system runs out of the box once a Foundry endpoint is supplied.
@@ -63,7 +63,7 @@ def pricing_for(model: str) -> ModelPricing:
     return PRICING.get(model, DEFAULT_PRICING)
 
 
-@dataclass(frozen=True)
+@dataclass  # not frozen: the in-app "Connect Foundry" flow updates these at runtime
 class Settings:
     # Foundry connection.
     project_endpoint: str = os.getenv("PROJECT_ENDPOINT", "")
@@ -94,3 +94,39 @@ class Settings:
 
 
 settings = Settings()
+
+# Runtime connection config, written by the in-app "Connect Foundry" flow and applied over .env
+# on startup so a user can connect their own Foundry without editing files. Gitignored.
+import json  # noqa: E402
+import pathlib  # noqa: E402
+
+_CONFIG_PATH = pathlib.Path(__file__).resolve().parents[2] / ".marshal.json"
+_RUNTIME_KEYS = (
+    "project_endpoint", "orchestrator_model", "worker_model", "critic_model",
+    "synthesiser_model", "search_endpoint", "knowledge_base",
+)
+
+
+def apply_runtime_config() -> None:
+    try:
+        if _CONFIG_PATH.exists():
+            data = json.loads(_CONFIG_PATH.read_text(encoding="utf-8"))
+            for k in _RUNTIME_KEYS:
+                if data.get(k):
+                    setattr(settings, k, data[k])
+    except Exception:
+        pass
+
+
+def save_runtime_config(data: dict) -> None:
+    try:
+        existing = {}
+        if _CONFIG_PATH.exists():
+            existing = json.loads(_CONFIG_PATH.read_text(encoding="utf-8"))
+        existing.update({k: v for k, v in data.items() if k in _RUNTIME_KEYS and v is not None})
+        _CONFIG_PATH.write_text(json.dumps(existing, indent=2), encoding="utf-8")
+    except Exception:
+        pass
+
+
+apply_runtime_config()

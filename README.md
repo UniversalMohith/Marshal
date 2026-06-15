@@ -4,6 +4,8 @@ A self-governing multi-agent reasoning system, built on **Microsoft Foundry**.
 
 > Microsoft Agents League Hackathon, Reasoning Agents track. Solo entry.
 
+![Marshal architecture: a guarded question flows into Microsoft Foundry prompt agents (orchestrator, parallel workers, critic, synthesiser), wrapped by a Budget Governor and grounded by Foundry IQ.](docs/architecture.svg)
+
 Marshal is a local-first, single-user AI workspace. You give it a hard question or a
 project goal; an orchestrator decomposes it, dispatches workers in parallel, grades
 their answers, re-commissions the weak ones, and synthesises a final answer, all under

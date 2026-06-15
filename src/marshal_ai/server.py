@@ -37,6 +37,225 @@ def health() -> dict:
     }
 
 
+def _list_deployments(endpoint: str):
+    """Return the deployment names for a Foundry project, or raise (auth/connection failure)."""
+    from .foundry import Foundry
+
+    f = Foundry(endpoint)
+    return [getattr(d, "name", None) for d in f.project.deployments.list() if getattr(d, "name", None)]
+
+
+@app.get("/config")
+def get_config() -> dict:
+    """Current Foundry connection state for the in-app 'Connect Foundry' screen."""
+    out = {
+        "connected": bool(settings.project_endpoint),
+        "project_endpoint": settings.project_endpoint,
+        "worker_model": settings.worker_model,
+        "search_endpoint": settings.search_endpoint,
+        "knowledge_base": settings.knowledge_base,
+        "foundry_iq_configured": bool(settings.search_endpoint and settings.knowledge_base),
+        "auth_ok": False,
+        "auth_error": None,
+        "models": [],
+    }
+    if settings.project_endpoint:
+        try:
+            out["models"] = _list_deployments(settings.project_endpoint)
+            out["auth_ok"] = True
+        except Exception as exc:
+            out["auth_error"] = f"{type(exc).__name__}: {exc}"
+    return out
+
+
+@app.post("/connect")
+def connect(req: dict) -> dict:
+    """Connect a Foundry project at runtime: validate, apply over .env, and persist.
+
+    Auth is via the machine's `az login` (DefaultAzureCredential); a sign-in failure here means
+    the user needs to run `az login`. No secrets are stored by this endpoint.
+    """
+    from .config import save_runtime_config
+
+    endpoint = (req.get("project_endpoint") or "").strip()
+    if not endpoint:
+        return {"ok": False, "error": "A Foundry project endpoint is required."}
+    try:
+        models = _list_deployments(endpoint)
+    except Exception as exc:
+        return {
+            "ok": False,
+            "error": f"{type(exc).__name__}: {exc}",
+            "auth_hint": "If this is a sign-in error, run `az login` in your terminal, then try again.",
+        }
+
+    worker = (req.get("worker_model") or "").strip()
+    chat_models = [m for m in models if "embed" not in m.lower()]
+    if worker and worker not in models:
+        return {"ok": False, "error": f"Deployment '{worker}' not found. Available: {', '.join(models) or '(none)'}"}
+    if not worker:
+        worker = chat_models[0] if chat_models else (models[0] if models else "")
+    if not worker:
+        return {"ok": False, "error": "No model deployments found in that project. Deploy a model in Foundry first."}
+
+    # One reasoning model drives the whole loop; the chat model picker overrides per chat.
+    settings.project_endpoint = endpoint
+    settings.orchestrator_model = settings.worker_model = settings.critic_model = settings.synthesiser_model = worker
+    if req.get("search_endpoint") is not None:
+        settings.search_endpoint = (req.get("search_endpoint") or "").strip()
+    if req.get("knowledge_base") is not None:
+        settings.knowledge_base = (req.get("knowledge_base") or "").strip()
+
+    # Rebuild caches so the new endpoint/model take effect immediately.
+    global _FOUNDRY_HELPER, _HELPER_AGENTS
+    _FOUNDRY_HELPER = None
+    _HELPER_AGENTS = set()
+
+    save_runtime_config({
+        "project_endpoint": endpoint, "worker_model": worker, "orchestrator_model": worker,
+        "critic_model": worker, "synthesiser_model": worker,
+        "search_endpoint": settings.search_endpoint, "knowledge_base": settings.knowledge_base,
+    })
+    return {"ok": True, "models": models, "worker_model": worker}
+
+
+# ===== GitHub (E) — token-based: list repos, read files, push changes. =====
+# The fine-grained PAT is held server-side and stored locally (gitignored). It is never
+# returned to the browser. The user generates and provides it; the server never asks for a password.
+import json as _json  # noqa: E402
+import pathlib as _pathlib  # noqa: E402
+
+_GH_TOKEN: str | None = None
+_GH_PATH = _pathlib.Path(__file__).resolve().parents[2] / ".marshal.json"
+
+
+def _gh_token() -> str:
+    global _GH_TOKEN
+    if _GH_TOKEN is None:
+        try:
+            _GH_TOKEN = (_json.loads(_GH_PATH.read_text(encoding="utf-8")).get("github_token") or "") if _GH_PATH.exists() else ""
+        except Exception:
+            _GH_TOKEN = ""
+    return _GH_TOKEN
+
+
+def _set_gh_token(tok: str) -> None:
+    global _GH_TOKEN
+    _GH_TOKEN = tok or ""
+    try:
+        data = _json.loads(_GH_PATH.read_text(encoding="utf-8")) if _GH_PATH.exists() else {}
+        if tok:
+            data["github_token"] = tok
+        else:
+            data.pop("github_token", None)
+        _GH_PATH.write_text(_json.dumps(data, indent=2), encoding="utf-8")
+    except Exception:
+        pass
+
+
+@app.get("/github/status")
+def github_status() -> dict:
+    tok = _gh_token()
+    if not tok:
+        return {"connected": False}
+    try:
+        from . import github
+        return {"connected": True, **github.whoami(tok)}
+    except Exception as exc:
+        return {"connected": False, "error": str(exc)}
+
+
+@app.post("/github/connect")
+def github_connect(req: dict) -> dict:
+    tok = (req.get("token") or "").strip()
+    if not tok:
+        return {"ok": False, "error": "A personal access token is required."}
+    try:
+        from . import github
+        who = github.whoami(tok)
+    except Exception as exc:
+        return {"ok": False, "error": str(exc),
+                "hint": "Create a fine-grained token with Contents: Read and write for your repos, then paste it here."}
+    _set_gh_token(tok)
+    return {"ok": True, **who}
+
+
+@app.post("/github/disconnect")
+def github_disconnect() -> dict:
+    _set_gh_token("")
+    return {"ok": True}
+
+
+@app.get("/github/repos")
+def github_repos() -> dict:
+    tok = _gh_token()
+    if not tok:
+        return {"error": "Not connected."}
+    try:
+        from . import github
+        return {"repos": github.list_repos(tok)}
+    except Exception as exc:
+        return {"error": str(exc)}
+
+
+@app.post("/github/tree")
+def github_tree(req: dict) -> dict:
+    tok = _gh_token()
+    if not tok:
+        return {"error": "Not connected."}
+    repo = (req.get("repo") or "").strip()
+    if not repo:
+        return {"error": "repo required"}
+    try:
+        from . import github
+        return github.get_tree(tok, repo, (req.get("ref") or "").strip() or None)
+    except Exception as exc:
+        return {"error": str(exc)}
+
+
+@app.post("/github/file")
+def github_file(req: dict) -> dict:
+    tok = _gh_token()
+    if not tok:
+        return {"error": "Not connected."}
+    repo = (req.get("repo") or "").strip()
+    path = (req.get("path") or "").strip()
+    if not (repo and path):
+        return {"error": "repo and path required"}
+    try:
+        from . import github
+        return github.get_file(tok, repo, path, (req.get("ref") or "").strip() or None)
+    except Exception as exc:
+        return {"error": str(exc)}
+
+
+@app.post("/github/push")
+def github_push(req: dict) -> dict:
+    tok = _gh_token()
+    if not tok:
+        return {"ok": False, "error": "Not connected."}
+    repo = (req.get("repo") or "").strip()
+    files = [
+        {"path": str(f.get("path", "")).strip(), "content": f.get("content") or ""}
+        for f in (req.get("files") or []) if f.get("path")
+    ]
+    if not repo:
+        return {"ok": False, "error": "repo required"}
+    if not files:
+        return {"ok": False, "error": "no files with content to push"}
+    try:
+        from . import github
+        res = github.push_files(
+            tok, repo, files,
+            (req.get("message") or "Update from Marshal").strip(),
+            (req.get("branch") or "").strip() or None,
+            (req.get("base") or "").strip() or None,
+        )
+        return {"ok": True, **res}
+    except Exception as exc:
+        return {"ok": False, "error": str(exc)}
+
+
 @app.get("/models")
 def models() -> dict:
     """Real model data for the Models view.
@@ -122,10 +341,15 @@ def _helper_reply(agent_name: str, system: str, prompt: str, req_model: str | No
 
         if _FOUNDRY_HELPER is None:
             _FOUNDRY_HELPER = Foundry(settings.project_endpoint)
-        if agent_name not in _HELPER_AGENTS:
-            _FOUNDRY_HELPER.ensure_agent(agent_name, settings.worker_model, system)
-            _HELPER_AGENTS.add(agent_name)
-        return _FOUNDRY_HELPER.ask(agent_name, prompt)
+        # Honour a user-picked deployment: the default model reuses the base agent; any other
+        # deployment gets its own per-model agent so the choice actually takes effect.
+        model = req_model or settings.worker_model
+        safe = "".join(c if (c.isalnum() or c in "-_") else "-" for c in model)  # agent ids: no dots etc.
+        aname = agent_name if model == settings.worker_model else f"{agent_name}-{safe}"
+        if aname not in _HELPER_AGENTS:
+            _FOUNDRY_HELPER.ensure_agent(aname, model, system)
+            _HELPER_AGENTS.add(aname)
+        return _FOUNDRY_HELPER.ask(aname, prompt)
 
     from .cli_provider import ClaudeCliProvider
 
