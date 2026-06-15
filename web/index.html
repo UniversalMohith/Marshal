@@ -810,7 +810,7 @@ async function runAgents(p, goalArg){
       case 'graded': { const t=cardOf(m.id); if(t){ if(m.grade==='strong'){ t.col='done'; t.notes='Approved by the critic ('+m.by+').'; weak.delete(t.id); } else { t.col='doing'; t.notes='Critic: '+m.grade+', reworking.'; weak.add(t.id); } reflect(); } break; }
       case 'rescope_start': (m.ids||[]).forEach(id=>{ const t=cardOf(id); if(t) t.notes='Re-scoping per critic feedback…'; }); reflect(); break;
       case 'synthesise_start': toast('Marshal is synthesising the answer…'); break;
-      case 'done': { finished=true; agentsRunning=false; const b=m.budget||{}; const ans=deEm(m.answer||''); runMeta.answer=ans; runMeta.spend=b.spent_usd; runMeta.budgetUsd=b.budget_usd; runMeta.charges=b.charges; runMeta.citations=dedupeCitations(groundHits); escalateWeak(); reflect(); render(); showMarshalResult(ans||'(no answer produced)', b, groundHits, p.id); toast('Marshal finished · $'+(b.spent_usd??0)+' · '+(b.charges??'?')+' calls'); break; }
+      case 'done': { finished=true; agentsRunning=false; const b=m.budget||{}; const ans=deEm(m.answer||''); runMeta.answer=ans; runMeta.spend=b.spent_usd; runMeta.budgetUsd=b.budget_usd; runMeta.charges=b.charges; runMeta.citations=dedupeCitations(groundHits); escalateWeak(); reflect(); render(); showMarshalResult(ans||'(no answer produced)', b, groundHits, p.id); toast('Marshal finished · $'+(b.spent_usd??0)+' · '+(b.charges??'?')+' calls'); if((p.tasks||[]).some(t=>(t.files||[]).length)) buildAndRunApp(p); break; }
       case 'refused': finished=true; agentsRunning=false; render(); uiInfo({title:'Marshal declined', body:m.reason||'The request was refused.'}); break;
       case 'error': finished=true; agentsRunning=false; render(); toast('Marshal error: '+(m.message||'unknown')); break;
       case 'spend_total': if(spendData){ spendData.total_spend_usd=m.total_spend_usd; spendData.total_runs=m.total_runs; } break;
@@ -1001,6 +1001,49 @@ async function openOnLocalhost(files, label){
     window.open(full,'_blank','noopener');
     toast((label||'Site')+' running at '+full);
   }catch(e){ toast('Backend unreachable.'); }
+}
+// ===== One-click: Run Marshal also builds and ships the app =====
+// When the board has cards with files, a finished reasoning run flows straight into building and
+// launching the app — no separate Draft / Save / Open steps. Reuses /draft-code and the sandbox preview.
+async function autoBuildEmptyFiles(p){
+  const jobs=[];
+  (p.tasks||[]).forEach(t=>(t.files||[]).forEach(f=>{
+    if(f.path && (f.content==null || (''+f.content).trim()==='')) jobs.push({t,f});   // only build what isn't built (keeps pre-loaded files)
+  }));
+  if(!jobs.length) return 0;
+  let built=0;
+  for(const {t,f} of jobs){
+    const name=f.path.split('/').pop();
+    toast('Marshal is building '+name+'…');
+    t.col='doing'; if(store.view==='kanban'&&store.current===p.id) render();
+    try{
+      const res=await fetch('/draft-code',{method:'POST',headers:{'Content-Type':'application/json'},
+        body:JSON.stringify({path:f.path, task:{title:t.title,notes:t.notes}, project:{name:p.name,desc:p.desc}, existing:''})});
+      const data=await res.json();
+      if(data.code){ f.content=data.code; f.by='ai'; built++;
+        t.col='done'; t.notes='Built by Marshal on Foundry ('+data.code.split('\n').length+' lines).\n\n'+(t.notes||''); }
+      else toast('Could not build '+name+(data.error?': '+data.error:'.'));
+    }catch(e){ toast('Could not reach the code drafter for '+name+'.'); }
+    persist(); if(store.view==='kanban'&&store.current===p.id) render();
+  }
+  return built;
+}
+// Run the project's app in Marshal's sandboxed in-app preview (the most seamless path — no new tab, no popups).
+function launchApp(p){
+  const files=projectFiles(p); if(!files.length) return false;
+  const app=files.find(f=>/\.html?$/i.test(f.path)) || files[0];
+  if(!app || !(''+app.content).trim()) return false;
+  previewHTML(app.content, ()=>{ store.view='kanban'; store.current=p.id; render(); });
+  return true;
+}
+// The one-click hook fired when Run Marshal finishes: draft any empty files, then launch the app.
+// Best-effort — the reasoning run has already succeeded, so failures here never surface as run failures.
+async function buildAndRunApp(p){
+  try{
+    const built=await autoBuildEmptyFiles(p);
+    if(!built) await new Promise(r=>setTimeout(r,1400));   // give the answer modal a beat when there was nothing to build
+    launchApp(p);
+  }catch(e){ /* swallow */ }
 }
 function aiSuggestNotes(t,p){
   const title=(t.title||'this task'), tl=title.toLowerCase(); let kind='Implement';
