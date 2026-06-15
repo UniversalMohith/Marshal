@@ -4,6 +4,8 @@ A self-governing multi-agent reasoning system, built on **Microsoft Foundry**.
 
 > Microsoft Agents League Hackathon, Reasoning Agents track. Solo entry.
 
+**▶ [Watch the 5-minute demo](https://youtu.be/VTpNT0szbiE)**
+
 ![Marshal architecture: a guarded question flows into Microsoft Foundry prompt agents (orchestrator, parallel workers, critic, synthesiser), wrapped by a Budget Governor and grounded by Foundry IQ.](docs/architecture.svg)
 
 Marshal is a local-first, single-user AI workspace. You give it a hard question or a
@@ -126,11 +128,12 @@ tests/          headless connectivity and full-loop checks
 - [x] Project description (features, functionality, problem solved, technologies)
 - [x] Architecture diagram showing use of the Microsoft tools ([docs/ARCHITECTURE.md](docs/ARCHITECTURE.md))
 - [x] Microsoft IQ integration (Foundry IQ grounding)
-- [ ] Demo video, 5 minutes maximum, on YouTube or Vimeo (link to follow)
+- [x] Demo video (5 min): https://youtu.be/VTpNT0szbiE
 - [ ] Microsoft Learn username
 
 ## Status
 
 Working end to end. The full reasoning loop runs on Microsoft Foundry, grounded and
 budgeted, streaming live to the web UI; Foundry IQ grounding is implemented and verified.
-The remaining submission items are the demo video and the Microsoft Learn username.
+The [demo video](https://youtu.be/VTpNT0szbiE) is live; the only remaining submission item
+is the Microsoft Learn username.
