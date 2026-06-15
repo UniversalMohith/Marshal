@@ -740,6 +740,35 @@ async function runAgents(p, goalArg){
   // Microsoft Foundry is the primary backend (demo is the no-config fallback). Ollama is a planned local add-on.
   if(store.provider==='ollama') toast('Local Ollama execution is a planned add-on; Marshal runs on Foundry for now.');
 
+  // Opt-in: when AI-spawn is on, ask Marshal which subagents could help, then let the user spawn them
+  // (cost warning shown). Fully gated and best-effort, with a timeout, so it never blocks the main run.
+  if(subagentsEnabled() && fcfg && fcfg.ai_can_spawn_subagents){
+    try{
+      const ctl=new AbortController(); const to=setTimeout(()=>ctl.abort(),20000);
+      const ar=await fetch('/subagents/auto',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({task:goal}),signal:ctl.signal});
+      clearTimeout(to); const ad=await ar.json();
+      if(ad.ok && ((ad.use&&ad.use.length) || ad.new)){
+        const names=(ad.use||[]).slice();
+        const lines=[];
+        if(names.length) lines.push('Use existing: '+names.join(', '));
+        if(ad.new) lines.push('Propose new: '+(ad.new.title||ad.new.name));
+        const ok=await uiConfirm({title:'Spawn subagents to help?', body:lines.join('\n')+'\n\n'+SA_COST_WARNING, okText:'Spawn '+(names.length+(ad.new?1:0))});
+        if(ok){
+          if(ad.new){ await fetch('/subagents/create',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name:ad.new.title||ad.new.name, title:ad.new.title, role:ad.new.role, charter:ad.new.charter})}); names.push((ad.new.name||'').trim() || (ad.new.title||'')); subagentsData=null; }
+          for(const nm of names){
+            try{
+              const sr=await fetch('/subagents/spawn',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name:nm, prompt:goal})});
+              const sd=await sr.json();
+              if(sd.ok){ p.tasks.push({id:uid(), title:'Subagent: '+(sd.title||nm), notes:deEm(sd.output||''), assignee:'Orchestrator', col:'review'}); }
+            }catch(_){}
+          }
+          persist(); if(store.view==='kanban'&&store.current===p.id) render();
+          toast('Subagents contributed '+names.length+' note(s) to the board.');
+        }
+      }
+    }catch(_){}   // never block the main run on the subagent hook
+  }
+
   let ws;
   try{ ws = new WebSocket((location.protocol==='https:'?'wss':'ws')+'://'+location.host+'/ws'); }
   catch(e){ toast('Could not reach the Marshal backend.'); agentsRunning=false; render(); return; }
