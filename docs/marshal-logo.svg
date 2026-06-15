@@ -1,0 +1,16 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 120 120" width="512" height="512" role="img" aria-label="Marshal">
+  <defs>
+    <linearGradient id="mg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#d6c2ff"/>
+      <stop offset="0.5" stop-color="#a855f7"/>
+      <stop offset="1" stop-color="#7c3aed"/>
+    </linearGradient>
+    <mask id="mm">
+      <rect width="120" height="120" fill="black"/>
+      <path d="M26 94 L26 32 L60 60 L94 32 L94 94" fill="none" stroke="white" stroke-width="17" stroke-linejoin="round" stroke-linecap="round"/>
+      <line x1="98" y1="26" x2="28" y2="100" stroke="black" stroke-width="27" stroke-linecap="round"/>
+    </mask>
+  </defs>
+  <rect width="120" height="120" fill="url(#mg)" mask="url(#mm)"/>
+  <polygon points="93.28,21.54 102.72,30.46 32.72,104.46 23.28,95.54" fill="url(#mg)"/>
+</svg>
