@@ -1639,7 +1639,13 @@ function wizSteps(){ let s=''; for(let i=0;i<WIZ_N;i++) s+=`<span class="${i<wiz
 function wizFoot(){ return `<div class="wiz-foot"><button class="btn ghost sm" data-w="back">Back</button><div class="right"><button class="wiz-skip" data-w="skip">Skip</button><button class="btn" data-w="next">Continue</button></div></div>`; }
 function openWizard(){ wizStep=0; wizSources=[]; overlayCapture(); $('wizard').classList.add('open'); renderWizard(); }
 function closeWizard(done){ $('wizard').classList.remove('open'); overlayRestore(); if(done && !store.onboarded){ store.onboarded=true; save('marshal-onboarded',true); } }
-function wizSaveStep(){ const r=$('wiz-repo'); if(r){ store.repo=r.value.trim(); save('marshal-repo',store.repo); } }
+function wizSaveStep(){ const r=$('wiz-repo'); if(r){ store.repo=r.value.trim(); save('marshal-repo',store.repo); }
+  const sa=$('wiz-sa'); if(sa){
+    const en=sa.checked; const ai=((($('wiz-sa-ai')||{}).checked)===true) && en;
+    fetch('/settings',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({subagents_enabled:en, ai_can_spawn_subagents:ai})})
+      .then(r=>r.json()).then(d=>{ if(fcfg){ fcfg.subagents_enabled=d.subagents_enabled; fcfg.ai_can_spawn_subagents=d.ai_can_spawn_subagents; } applySubagentVisibility(); }).catch(()=>{});
+  }
+}
 function wizGo(d){ wizSaveStep(); const n=wizStep+d; if(n<0) return; if(n>=WIZ_N){ closeWizard(true); render(); toast('Welcome to Marshal.'); return; } wizStep=n; renderWizard(); }
 function renderWizard(){
   const w=$('wizard'); let b='';
@@ -1656,6 +1662,15 @@ function renderWizard(){
       <div style="display:flex;gap:8px;margin-bottom:6px"><input id="wiz-ep" type="text" placeholder="https://<resource>.services.ai.azure.com/api/projects/<project>" value="${esc((fcfg&&fcfg.project_endpoint)||'')}" style="flex:1"><button class="btn ghost sm" id="wiz-connect">Connect</button></div>
       <div class="muted" style="font-size:12px;margin-bottom:12px">Status: <span id="wiz-fstatus">${foundryStatusHTML()}</span></div>
       <div class="muted" style="font-size:12px;border-top:1px solid var(--line);padding-top:10px"><strong>Prefer local?</strong> Marshal also detects <strong>Ollama</strong> models on <code>localhost:11434</code> (run <code>ollama pull llama3.1</code>); they appear next to Foundry in Models. Foundry stays the primary backend.</div>
+      <div class="muted" style="font-size:12px;border-top:1px solid var(--line);padding-top:10px;margin-top:10px">
+        <label style="display:flex;align-items:center;gap:8px;cursor:pointer;color:var(--ink)">
+          <input type="checkbox" id="wiz-sa" ${(!fcfg || fcfg.subagents_enabled!==false)?'checked':''}> Enable <strong>Subagents</strong> (create named agents with charters; adds a sidebar tab)
+        </label>
+        <label style="display:flex;align-items:center;gap:8px;cursor:pointer;margin-top:6px;color:var(--ink)">
+          <input type="checkbox" id="wiz-sa-ai" ${(fcfg&&fcfg.ai_can_spawn_subagents)?'checked':''} ${(!fcfg || fcfg.subagents_enabled!==false)?'':'disabled'}> Let Marshal spawn subagents on a task automatically
+        </label>
+        <div style="margin-top:6px;color:var(--review)">⚠ Running many subagents at once is pricey, each is a separate model call.</div>
+      </div>
       ${wizFoot()}`;
   } else if(wizStep===2){
     b=`<div style="display:flex;align-items:center;gap:10px;margin-bottom:6px"><span style="display:grid;place-items:center;color:var(--ink);width:24px;height:24px">${I.github}</span><h3 class="wt" style="margin:0">Connect GitHub</h3></div>
@@ -1685,6 +1700,7 @@ function renderWizard(){
   w.innerHTML=`<div class="wiz-card"><div class="wiz-head"><div class="brandrow">${WMARK()}<span>SET UP MARSHAL</span></div>${wizSteps()}</div>${b}</div>`;
   w.querySelectorAll('[data-w]').forEach(btn=> btn.onclick=()=>{ const a=btn.dataset.w; if(a==='next'||a==='skip') wizGo(1); else if(a==='back') wizGo(-1); else if(a==='finish'){ wizSaveStep(); closeWizard(true); render(); toast('Welcome to Marshal.'); } else if(a==='skipall'){ closeWizard(true); render(); toast('Setup skipped. Run it again any time from Settings.'); } });
   const rs=$('wiz-repo-save'); if(rs) rs.onclick=()=>{ store.repo=$('wiz-repo').value.trim(); save('marshal-repo',store.repo); toast(store.repo?('Linked '+store.repo):'Repo cleared.'); };
+  const wsa=$('wiz-sa'); if(wsa) wsa.onchange=()=>{ const ai=$('wiz-sa-ai'); if(ai){ ai.disabled=!wsa.checked; if(!wsa.checked) ai.checked=false; } };
   const cp=$('wiz-copy'); if(cp) cp.onclick=()=>{ try{ navigator.clipboard.writeText(WIZ_PROMPT); }catch(e){} cp.textContent='Copied'; setTimeout(()=>{cp.textContent='Copy';},1200); };
   const add=$('wiz-add'); if(add) add.onclick=()=>{ const src=$('wiz-src').value, txt=$('wiz-ctx').value.trim(); if(!txt){ toast("Paste your AI's reply first."); return; } store.profileNotes=((store.profileNotes?store.profileNotes.trim()+'\n\n':'')+'## From '+src+'\n'+txt).slice(0,8000); save('marshal-notes',store.profileNotes); if(!wizSources.includes(src)) wizSources.push(src); renderWizard(); toast('Added context from '+src+'.'); };
   const wc=$('wiz-connect'); if(wc) wc.onclick=async()=>{ const ep=($('wiz-ep').value||'').trim(); if(!ep){ toast('Paste your project endpoint.'); return; } const ss=$('wiz-fstatus'); if(ss) ss.textContent='connecting…'; wc.disabled=true; try{ const r=await fetch('/connect',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({project_endpoint:ep})}); const d=await r.json(); if(d.ok){ fcfg=null; modelData=null; await loadFoundryConfig(true); toast('Foundry connected. '+((d.models||[]).length)+' model(s).'); renderWizard(); } else { if(ss) ss.textContent=(d.error||'failed'); wc.disabled=false; } }catch(e){ if(ss) ss.textContent='backend unreachable'; wc.disabled=false; } };
