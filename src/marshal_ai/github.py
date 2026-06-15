@@ -88,6 +88,57 @@ def get_file(token: str, repo: str, path: str, ref: str | None = None) -> dict:
     return {"path": path, "content": content, "sha": r.get("sha")}
 
 
+def _req_public(method: str, path: str, body: dict | None = None):
+    """Unauthenticated GitHub REST call (public repos only). Rate-limited by GitHub to
+    roughly 60 requests/hour/IP. Mirrors _req() but adds no Authorization header."""
+    data = json.dumps(body).encode() if body is not None else None
+    req = urllib.request.Request(API + path, data=data, method=method)
+    req.add_header("Accept", "application/vnd.github+json")
+    req.add_header("X-GitHub-Api-Version", "2022-11-28")
+    req.add_header("User-Agent", "Marshal")
+    if data is not None:
+        req.add_header("Content-Type", "application/json")
+    try:
+        with urllib.request.urlopen(req, timeout=20) as resp:
+            txt = resp.read().decode()
+            return json.loads(txt) if txt else {}
+    except urllib.error.HTTPError as exc:
+        detail = ""
+        try:
+            detail = json.loads(exc.read().decode()).get("message", "")
+        except Exception:
+            pass
+        # 403 with no token is almost always the anonymous rate limit; make that legible.
+        if exc.code == 403 and "rate limit" in (detail or "").lower():
+            raise GitHubError(403, "GitHub's unauthenticated rate limit was hit (about 60 "
+                                   "requests per hour). Wait a while, or connect a token instead.")
+        raise GitHubError(exc.code, detail or exc.reason)
+    except urllib.error.URLError as exc:
+        raise GitHubError(0, str(exc.reason))
+
+
+def get_public_tree(repo: str, ref: str | None = None) -> dict:
+    """Public-repo file tree with no token. Same shape as get_tree()."""
+    if not ref:
+        ref = _req_public("GET", f"/repos/{repo}").get("default_branch", "main")
+    t = _req_public("GET", f"/repos/{repo}/git/trees/{ref}?recursive=1")
+    files = [n["path"] for n in (t.get("tree") or []) if n.get("type") == "blob"]
+    return {"ref": ref, "files": files, "truncated": bool(t.get("truncated"))}
+
+
+def get_public_file(repo: str, path: str, ref: str | None = None) -> dict:
+    """Public-repo single file with no token. Same shape as get_file()."""
+    p = f"/repos/{repo}/contents/{_quote(path)}"
+    if ref:
+        p += f"?ref={ref}"
+    r = _req_public("GET", p)
+    if r.get("encoding") == "base64":
+        content = base64.b64decode(r.get("content", "")).decode("utf-8", "replace")
+    else:
+        content = r.get("content", "")
+    return {"path": path, "content": content, "sha": r.get("sha")}
+
+
 def push_files(token: str, repo: str, files: list[dict], message: str,
                branch: str | None = None, base: str | None = None) -> dict:
     """Write files onto a (new or existing) branch and return a PR-ready compare URL.

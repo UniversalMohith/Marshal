@@ -422,6 +422,8 @@ const store = {
   profileNotes: load('marshal-notes',''),
   chat: load('marshal-chat', { messages:[], source:'project' }),
   repo: load('marshal-repo',''),
+  ghMode: load('marshal-ghmode','token'),     // 'token' | 'public'
+  ghPublicRepo: load('marshal-pubrepo',''),   // owner/repo for public mode (no token)
   onboarded: load('marshal-onboarded', false),
   theme: (function(){ try{ return localStorage.getItem('marshal-theme')||'dark-purple'; }catch(e){ return 'dark-purple'; } })(),
   view: 'dashboard',
@@ -539,7 +541,7 @@ function wireDashboard(){
   document.querySelectorAll('[data-esc-done]').forEach(b=> b.onclick=()=>{ const a=b.dataset.escDone.split('|'); const p=project(a[0]); const t=p&&p.tasks.find(x=>x.id===a[1]); if(t){ t.col='done'; persist(); render(); toast('Marked resolved.'); } });
 }
 function emptyState(icon,title,text,btnLabel,onclickAttr){ return `<div class="empty"><div class="eicon">${icon}</div><h3>${esc(title)}</h3><p>${esc(text)}</p>${btnLabel?`<button class="btn" ${onclickAttr||''}>${btnLabel}</button>`:''}</div>`; }
-function projectsHTML(){ return store.projects.length ? `<div class="grid">${store.projects.map(projectCard).join('')}</div>` : emptyState(I.folder,'No projects yet','Create your first project to open a board and start working alongside Marshal.','New project','onclick="newProject()"'); }
+function projectsHTML(){ const note=`<p class="sub" style="margin:0 0 16px">Projects run fully on your machine. GitHub is optional, connect it from the GitHub tab only if you want Marshal to read or push your repos.</p>`; return note + (store.projects.length ? `<div class="grid">${store.projects.map(projectCard).join('')}</div>` : emptyState(I.folder,'No projects yet','Create your first project to open a board and start working alongside Marshal. No GitHub required.','New project','onclick="newProject()"')); }
 function wireProjects(){ wireProjectCardButtons(); }
 function wireProjectCardButtons(){
   document.querySelectorAll('[data-open]').forEach(b=> b.onclick=()=>nav('kanban',b.dataset.open));
@@ -1550,8 +1552,33 @@ function wireModels(){ document.querySelectorAll('[data-prov]').forEach(b=> b.on
 // GitHub's own editors (github.dev for quick edits, Codespaces for heavier work).
 function repoSlug(){ return (store.repo||'').trim().replace(/^https?:\/\/github\.com\//i,'').replace(/\.git$/i,'').replace(/^\/+|\/+$/g,''); }
 function repoLinks(){ const r=repoSlug(); if(!/^[\w.-]+\/[\w.-]+$/.test(r)) return null; return { slug:r, gh:'https://github.com/'+r, dev:'https://github.dev/'+r, codespaces:'https://codespaces.new/'+r, blob:(path)=>'https://github.com/'+r+'/blob/main/'+(path||'').replace(/^\/+/,'').split('/').map(encodeURIComponent).join('/') }; }
+function normSlug(v){ return (v||'').trim().replace(/^https?:\/\/github\.com\//i,'').replace(/\.git$/i,'').replace(/^\/+|\/+$/g,''); }
+function setGhMode(m){ store.ghMode=m; save('marshal-ghmode',m); ghTree=null; ghPubTree=null; render(); }
 // GitHub integration state (E): connection, repo list, and the linked repo's file tree.
 let ghState=null, ghRepos=null, ghTree=null;
+// Public mode (no token): pull a public repo's tree/files, edit locally, push from terminal.
+let ghPubTree=null;   // public-repo tree cache, keyed by slug in ._repo
+async function loadGithubPublicTree(force){
+  const slug=normSlug(store.ghPublicRepo); if(!/^[\w.-]+\/[\w.-]+$/.test(slug)){ ghPubTree=null; return; }
+  if(ghPubTree && ghPubTree._repo===slug && !force) return ghPubTree;
+  try{ const r=await fetch('/github/public-tree',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({repo:slug})}); const d=await r.json(); d._repo=slug; ghPubTree=d; }
+  catch(e){ ghPubTree={error:String(e),_repo:slug}; }
+  return ghPubTree;
+}
+async function githubViewPublicFile(path){
+  const slug=normSlug(store.ghPublicRepo); if(!/^[\w.-]+\/[\w.-]+$/.test(slug)) return; toast('Loading '+path+'…');
+  try{ const r=await fetch('/github/public-file',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({repo:slug, path})}); const d=await r.json();
+    if(d.error){ uiInfo({title:'Could not read file', body:d.error}); return; }
+    $('modal').className='modal wide';
+    $('modal').innerHTML='<h3 style="font-family:ui-monospace,Menlo,Consolas,monospace;font-size:14px">'+esc(path)+'</h3>'
+      +'<textarea id="pub-edit" class="code-edit" spellcheck="false">'+esc(d.content||'')+'</textarea>'
+      +'<p class="muted" style="font-size:12px;margin:10px 0 0">Public mode is read-only on GitHub\'s side. Edit here, copy, and paste into your local clone, then push from your terminal (see the push guide).</p>'
+      +'<div class="modal-foot" style="justify-content:flex-end;gap:8px;margin-top:12px"><button class="btn ghost sm" id="m-copy">Copy</button><button class="btn sm" id="m-ok">Close</button></div>';
+    const wo=$('scrim').classList.contains('open'); $('scrim').classList.add('open'); afterModalOpen(wo);
+    $('m-ok').onclick=()=>closeModal();
+    $('m-copy').onclick=()=>{ try{ navigator.clipboard.writeText($('pub-edit').value); toast('Copied.'); }catch(e){} };
+  }catch(e){ uiInfo({title:'Could not read file', body:'Backend error.'}); }
+}
 async function loadGithubStatus(force){ if(ghState && !force) return ghState; try{ const r=await fetch('/github/status'); ghState=await r.json(); }catch(e){ ghState={connected:false,error:String(e)}; } return ghState; }
 async function loadGithubRepos(force){ if(ghRepos && !force) return ghRepos; try{ const r=await fetch('/github/repos'); const d=await r.json(); ghRepos=d.error?{error:d.error}:(d.repos||[]); }catch(e){ ghRepos={error:String(e)}; } return ghRepos; }
 async function loadGithubTree(force){ const L=repoLinks(); if(!L){ ghTree=null; return; } if(ghTree && ghTree._repo===L.slug && !force) return ghTree; try{ const r=await fetch('/github/tree',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({repo:L.slug})}); const d=await r.json(); d._repo=L.slug; ghTree=d; }catch(e){ ghTree={error:String(e),_repo:L.slug}; } return ghTree; }
@@ -1573,11 +1600,77 @@ async function githubViewFile(path){ const L=repoLinks(); if(!L) return; toast('
     $('modal').className='modal wide'; $('modal').innerHTML='<h3 style="font-family:ui-monospace,Menlo,Consolas,monospace;font-size:14px">'+esc(path)+'</h3><textarea class="code-edit" readonly spellcheck="false">'+esc(d.content||'')+'</textarea><div class="modal-foot" style="justify-content:flex-end;margin-top:12px"><button class="btn sm" id="m-ok">Close</button></div>'; const wo=$('scrim').classList.contains('open'); $('scrim').classList.add('open'); afterModalOpen(wo); $('m-ok').onclick=()=>closeModal();
   }catch(e){ uiInfo({title:'Could not read file', body:'Backend error.'}); }
 }
+function ghModeChooserHTML(){
+  const m=store.ghMode;
+  return `<div class="panel" style="margin-bottom:16px">
+    <div class="row" style="border-top:0;padding:0 0 12px;align-items:flex-start">
+      <div style="flex:1"><strong>GitHub is optional.</strong>
+        <div class="muted" style="font-size:12.5px;margin-top:3px">Projects, boards, chat and the reasoning loop all work fully on your machine with no GitHub at all. Connect it only if you want Marshal to read or write your repos.</div></div>
+    </div>
+    <div class="row" style="padding-top:0">
+      <div>Mode</div>
+      <div class="seg">
+        <button class="${m==='token'?'on':''}" data-ghmode="token" title="Read and write with a token">Token (read + write)</button>
+        <button class="${m==='public'?'on':''}" data-ghmode="public" title="No token; pull public repos, push from your terminal">Public (no token)</button>
+      </div>
+    </div>
+    <div class="muted" style="font-size:12px;border-top:1px solid var(--line);padding-top:10px">
+      ${m==='token'
+        ? 'Token mode: a fine-grained PAT lets Marshal list your repos, pull files, and push a branch ready for a pull request. Stored locally, never committed.'
+        : 'Public mode: no credentials. Pull a public repo\'s files to view and edit here, then push with plain git from your own terminal. Rate-limited by GitHub.'}
+    </div>
+  </div>`;
+}
 function githubHTML(){
+  return ghModeChooserHTML() + (store.ghMode==='public' ? githubPublicHTML() : githubTokenHTML());
+}
+function githubPublicHTML(){
+  const slug=normSlug(store.ghPublicRepo);
+  const valid=/^[\w.-]+\/[\w.-]+$/.test(slug);
+  let body=`<div class="panel"><h2>Public repository</h2>
+    <p class="h">Enter any public repo as <code>owner/repo</code> (or paste its GitHub URL). Marshal pulls its files with no token, so you can read and edit them here. Pushing happens from your terminal.</p>
+    <div style="display:flex;gap:8px"><input id="pub-repo" type="text" value="${esc(store.ghPublicRepo||'')}" placeholder="owner / repo  e.g. octocat/Hello-World" style="flex:1"><button class="btn sm" id="pub-load">Pull files</button></div>
+    ${valid?'':`<div class="muted" style="font-size:12px;margin-top:8px">No repo loaded yet.</div>`}
+  </div>`;
+  if(valid){
+    if(!ghPubTree || ghPubTree._repo!==slug){ loadGithubPublicTree().then(()=>{ if(store.view==='github') render(); }); body+=`<div class="muted" style="margin:16px 2px">Loading file tree…</div>`; }
+    else if(ghPubTree.error){ body+=`<div class="panel" style="margin-top:16px;border-color:var(--review)"><strong>Could not pull this repo</strong><div class="muted" style="font-size:13px;margin-top:6px">${esc(ghPubTree.error)}</div><div class="muted" style="font-size:12px;margin-top:8px">Public mode only reads <strong>public</strong> repos. For a private repo, switch to Token mode above.</div></div>`; }
+    else { body+=`<div class="panel" style="margin-top:16px"><h2>Files <span class="muted" style="font-size:12px">(${(ghPubTree.files||[]).length} on ${esc(ghPubTree.ref||'')})</span></h2><div class="filelist" style="max-height:340px;overflow:auto">`
+      +(ghPubTree.files||[]).slice(0,500).map(f=>`<div class="fileitem">${I.file}<button class="fopen" data-pubfile="${esc(f)}">${esc(f)}</button></div>`).join('')
+      +`</div>${ghPubTree.truncated?'<div class="muted" style="font-size:11px;margin-top:8px">Tree truncated by GitHub (very large repo).</div>':''}</div>`; }
+  }
+  body+=githubPushGuideHTML(valid?slug:'owner/repo');
+  return body;
+}
+function githubPushGuideHTML(slug){
+  const url='https://github.com/'+slug+'.git';
+  const steps=[
+    ['Clone the repo (once)', 'git clone '+url],
+    ['Make your edits', '# paste the files you edited in Marshal into the matching paths'],
+    ['Stage and commit', 'git add -A\ngit commit -m "Update from Marshal"'],
+    ['Push to GitHub', 'git push origin HEAD'],
+  ];
+  return `<div class="panel" style="margin-top:16px"><h2>Push your changes from your terminal</h2>
+    <p class="h">Public mode never writes to GitHub. Edit files here, then run these in your own terminal to push. You need <a href="https://git-scm.com/downloads" target="_blank" rel="noopener" style="color:var(--accent)">git</a> installed and push access to the repo (your fork, or a repo you own).</p>
+    <div class="filelist">${steps.map((s,i)=>`
+      <div style="display:flex;gap:10px;align-items:flex-start;padding:8px 0;border-top:${i?'1px solid var(--line)':'0'}">
+        <span class="citen">${i+1}</span>
+        <div style="flex:1;min-width:0">
+          <div style="font-weight:600;margin-bottom:6px">${esc(s[0])}</div>
+          <div style="display:flex;gap:8px;align-items:flex-start">
+            <pre style="flex:1;min-width:0;margin:0;white-space:pre-wrap;word-break:break-all;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:12.5px;background:var(--surface2);border:1px solid var(--line);border-radius:8px;padding:9px 11px;color:var(--ink)">${esc(s[1])}</pre>
+            <button class="btn ghost sm" data-pubcopy="${esc(s[1])}">Copy</button>
+          </div>
+        </div>
+      </div>`).join('')}</div>
+    <div class="muted" style="font-size:12px;margin-top:10px">No push access? Fork the repo on GitHub first, clone your fork, push, then open a pull request. Or use Token mode for in-app push.</div>
+  </div>`;
+}
+function githubTokenHTML(){
   if(!ghState){ loadGithubStatus().then(()=>{ if(store.view==='github') render(); }); return `<p class="sub">Checking GitHub connection…</p>`; }
   if(!ghState.connected){
     return `<p class="sub">Connect GitHub so Marshal can list your repositories, pull files into cards, and push changes back.</p>
-     ${emptyState(I.github,'Connect GitHub','Create a fine-grained personal access token with Contents: Read and write, then paste it in. Marshal stores it locally and never commits it.','Connect with a token','onclick="githubConnect()"')}
+     ${emptyState(I.github,'Connect GitHub','Create a fine-grained personal access token with Contents: Read and write, then paste it in. Marshal stores it locally and never commits it. Prefer no token? Switch to Public mode above to use a public repo.','Connect with a token','onclick="githubConnect()"')}
      <div class="panel" style="margin-top:18px"><h2>How to create a token</h2><p class="h">On GitHub: Settings → Developer settings → Fine-grained tokens → Generate new token. Repository access: the repos you want Marshal to use. Permissions: Contents → Read and write. Generate it, copy it, and paste it into Connect above.</p></div>`;
   }
   const L=repoLinks();
@@ -1601,8 +1694,15 @@ function githubHTML(){
   return `<p class="sub">Connected to GitHub. Pick a repository, browse and pull files, and push changes from cards.</p>${body}`;
 }
 function wireGithub(){
+  document.querySelectorAll('[data-ghmode]').forEach(b=> b.onclick=()=>setGhMode(b.dataset.ghmode));
+  // token panel
   document.querySelectorAll('[data-ghrepo]').forEach(b=> b.onclick=()=>githubPickRepo(b.dataset.ghrepo));
   document.querySelectorAll('[data-ghfile]').forEach(b=> b.onclick=()=>githubViewFile(b.dataset.ghfile));
+  // public panel
+  document.querySelectorAll('[data-pubfile]').forEach(b=> b.onclick=()=>githubViewPublicFile(b.dataset.pubfile));
+  document.querySelectorAll('[data-pubcopy]').forEach(b=> b.onclick=()=>{ try{ navigator.clipboard.writeText(b.dataset.pubcopy); toast('Copied.'); }catch(e){} });
+  const pl=$('pub-load'); if(pl) pl.onclick=()=>{ const v=normSlug($('pub-repo').value); if(!/^[\w.-]+\/[\w.-]+$/.test(v)){ toast('Enter the repo as owner/repo.'); return; } store.ghPublicRepo=v; save('marshal-pubrepo',v); ghPubTree=null; render(); };
+  const pr=$('pub-repo'); if(pr) pr.addEventListener('keydown',e=>{ if(e.key==='Enter'){ e.preventDefault(); const pb=$('pub-load'); if(pb) pb.click(); } });
 }
 function githubLink(){ uiPrompt({title:'Link a GitHub repository', fields:[{id:'repo',label:'Repository',value:store.repo||'',placeholder:'owner/repo',hint:'e.g. octocat/hello-world, or paste the full GitHub URL.'}], okText:'Link'}).then(r=>{ if(!r) return; const v=(r.repo||'').trim(); const slug=v.replace(/^https?:\/\/github\.com\//i,'').replace(/\.git$/i,'').replace(/^\/+|\/+$/g,''); if(!/^[\w.-]+\/[\w.-]+$/.test(slug)){ toast('Enter the repo as owner/repo.'); return; } store.repo=slug; save('marshal-repo',store.repo); toast('Linked '+slug+'.'); render(); }); }
 function githubUnlink(){ store.repo=''; save('marshal-repo',''); ghTree=null; toast('Repository unlinked.'); render(); }
@@ -1640,6 +1740,7 @@ function wizFoot(){ return `<div class="wiz-foot"><button class="btn ghost sm" d
 function openWizard(){ wizStep=0; wizSources=[]; overlayCapture(); $('wizard').classList.add('open'); renderWizard(); }
 function closeWizard(done){ $('wizard').classList.remove('open'); overlayRestore(); if(done && !store.onboarded){ store.onboarded=true; save('marshal-onboarded',true); } }
 function wizSaveStep(){ const r=$('wiz-repo'); if(r){ store.repo=r.value.trim(); save('marshal-repo',store.repo); }
+  const pr=$('wiz-pubrepo'); if(pr){ const v=normSlug(pr.value); if(/^[\w.-]+\/[\w.-]+$/.test(v)){ store.ghPublicRepo=v; save('marshal-pubrepo',v); } }
   const sa=$('wiz-sa'); if(sa){
     const en=sa.checked; const ai=((($('wiz-sa-ai')||{}).checked)===true) && en;
     fetch('/settings',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({subagents_enabled:en, ai_can_spawn_subagents:ai})})
@@ -1673,12 +1774,24 @@ function renderWizard(){
       </div>
       ${wizFoot()}`;
   } else if(wizStep===2){
-    b=`<div style="display:flex;align-items:center;gap:10px;margin-bottom:6px"><span style="display:grid;place-items:center;color:var(--ink);width:24px;height:24px">${I.github}</span><h3 class="wt" style="margin:0">Connect GitHub</h3></div>
-      <p class="wd">Connect a fine-grained token so Marshal can <strong>pull</strong> your repos and files in, and <strong>push</strong> changes back as a ready-to-merge branch. The token stays on the local server, never shown to the browser or committed.</p>
-      <div style="display:flex;gap:8px;margin-bottom:6px"><input id="wiz-pat" type="password" placeholder="github_pat_…  (Contents: Read and write)" style="flex:1"><button class="btn ghost sm" id="wiz-pat-go">Connect</button></div>
-      <div class="muted" style="font-size:12px;margin-bottom:12px">Status: <span id="wiz-ghstatus">${(ghState&&ghState.connected)?("connected as "+esc(ghState.login||"")):"not connected"}</span></div>
-      <div style="display:flex;gap:8px;margin-bottom:8px"><input id="wiz-repo" type="text" placeholder="owner / repo  (optional default)" value="${esc(store.repo||'')}" style="flex:1"><button class="btn ghost sm" id="wiz-repo-save">Link repo</button></div>
-      ${wizFoot()}`;
+    const m=store.ghMode||'token';
+    const seg=`<div class="seg" style="margin-bottom:12px">
+      <button class="${m==='token'?'on':''}" data-wghmode="token">Token (read + write)</button>
+      <button class="${m==='public'?'on':''}" data-wghmode="public">Public (no token)</button></div>`;
+    const intro=`<p class="wd"><strong>GitHub is optional.</strong> Marshal works fully on your machine without it. Connect it only if you want Marshal to read or write your repos. You can skip this and add it later from the GitHub tab.</p>`;
+    let inner;
+    if(m==='token'){
+      inner=`<p class="wd">Connect a fine-grained token so Marshal can <strong>pull</strong> your repos and files in, and <strong>push</strong> changes back as a ready-to-merge branch. The token stays on the local server, never shown to the browser or committed.</p>
+        <div style="display:flex;gap:8px;margin-bottom:6px"><input id="wiz-pat" type="password" placeholder="github_pat_…  (Contents: Read and write)" style="flex:1"><button class="btn ghost sm" id="wiz-pat-go">Connect</button></div>
+        <div class="muted" style="font-size:12px;margin-bottom:12px">Status: <span id="wiz-ghstatus">${(ghState&&ghState.connected)?("connected as "+esc(ghState.login||"")):"not connected"}</span></div>
+        <div style="display:flex;gap:8px;margin-bottom:8px"><input id="wiz-repo" type="text" placeholder="owner / repo  (optional default)" value="${esc(store.repo||'')}" style="flex:1"><button class="btn ghost sm" id="wiz-repo-save">Link repo</button></div>`;
+    } else {
+      inner=`<p class="wd">No token needed. Marshal pulls a <strong>public</strong> repo's files so you can read and edit them here, then you <strong>push from your own terminal</strong> with plain git. Marshal shows the exact commands on the GitHub tab.</p>
+        <div style="display:flex;gap:8px;margin-bottom:8px"><input id="wiz-pubrepo" type="text" placeholder="owner / repo  e.g. octocat/Hello-World" value="${esc(store.ghPublicRepo||'')}" style="flex:1"><button class="btn ghost sm" id="wiz-pubrepo-save">Use this repo</button></div>
+        <div class="muted" style="font-size:12px;margin-bottom:12px">Rate-limited by GitHub (about 60 requests/hour). Private repos need Token mode.</div>`;
+    }
+    b=`<div style="display:flex;align-items:center;gap:10px;margin-bottom:6px"><span style="display:grid;place-items:center;color:var(--ink);width:24px;height:24px">${I.github}</span><h3 class="wt" style="margin:0">GitHub (optional)</h3></div>
+      ${intro}${seg}${inner}${wizFoot()}`;
   } else if(wizStep===3){
     const chips=wizSources.map(s=>`<span class="wiz-chip">${I.check}${esc(s)}</span>`).join('');
     b=`<h3 class="wt">Bring your context</h3><p class="wd">Paste this into any AI you already use, then paste its reply back. Do it for as many as you like, the more the better.</p>
@@ -1700,6 +1813,8 @@ function renderWizard(){
   w.innerHTML=`<div class="wiz-card"><div class="wiz-head"><div class="brandrow">${WMARK()}<span>SET UP MARSHAL</span></div>${wizSteps()}</div>${b}</div>`;
   w.querySelectorAll('[data-w]').forEach(btn=> btn.onclick=()=>{ const a=btn.dataset.w; if(a==='next'||a==='skip') wizGo(1); else if(a==='back') wizGo(-1); else if(a==='finish'){ wizSaveStep(); closeWizard(true); render(); toast('Welcome to Marshal.'); } else if(a==='skipall'){ closeWizard(true); render(); toast('Setup skipped. Run it again any time from Settings.'); } });
   const rs=$('wiz-repo-save'); if(rs) rs.onclick=()=>{ store.repo=$('wiz-repo').value.trim(); save('marshal-repo',store.repo); toast(store.repo?('Linked '+store.repo):'Repo cleared.'); };
+  w.querySelectorAll('[data-wghmode]').forEach(btn=> btn.onclick=()=>{ store.ghMode=btn.dataset.wghmode; save('marshal-ghmode',store.ghMode); renderWizard(); });
+  const prs=$('wiz-pubrepo-save'); if(prs) prs.onclick=()=>{ const v=normSlug($('wiz-pubrepo').value); if(!/^[\w.-]+\/[\w.-]+$/.test(v)){ toast('Enter the repo as owner/repo.'); return; } store.ghPublicRepo=v; save('marshal-pubrepo',v); ghPubTree=null; toast('Public repo set: '+v); };
   const wsa=$('wiz-sa'); if(wsa) wsa.onchange=()=>{ const ai=$('wiz-sa-ai'); if(ai){ ai.disabled=!wsa.checked; if(!wsa.checked) ai.checked=false; } };
   const cp=$('wiz-copy'); if(cp) cp.onclick=()=>{ try{ navigator.clipboard.writeText(WIZ_PROMPT); }catch(e){} cp.textContent='Copied'; setTimeout(()=>{cp.textContent='Copy';},1200); };
   const add=$('wiz-add'); if(add) add.onclick=()=>{ const src=$('wiz-src').value, txt=$('wiz-ctx').value.trim(); if(!txt){ toast("Paste your AI's reply first."); return; } store.profileNotes=((store.profileNotes?store.profileNotes.trim()+'\n\n':'')+'## From '+src+'\n'+txt).slice(0,8000); save('marshal-notes',store.profileNotes); if(!wizSources.includes(src)) wizSources.push(src); renderWizard(); toast('Added context from '+src+'.'); };

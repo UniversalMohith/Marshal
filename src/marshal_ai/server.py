@@ -271,6 +271,45 @@ def github_file(req: dict) -> dict:
         return {"error": str(exc)}
 
 
+def _norm_repo(raw: str | None) -> str:
+    """Accept a full GitHub URL or owner/repo and return a clean slug, or '' if malformed."""
+    import re
+
+    s = (raw or "").strip()
+    s = re.sub(r"^https?://github\.com/", "", s, flags=re.I)
+    s = re.sub(r"\.git$", "", s, flags=re.I).strip("/")
+    return s if re.fullmatch(r"[\w.-]+/[\w.-]+", s) else ""
+
+
+@app.post("/github/public-tree")
+def github_public_tree(req: dict) -> dict:
+    """Public-repo file tree, no token. Anonymous GitHub API (rate-limited)."""
+    repo = _norm_repo(req.get("repo"))
+    if not repo:
+        return {"error": "Enter a public repository as owner/repo."}
+    try:
+        from . import github
+        return github.get_public_tree(repo, (req.get("ref") or "").strip() or None)
+    except Exception as exc:
+        return {"error": str(exc)}
+
+
+@app.post("/github/public-file")
+def github_public_file(req: dict) -> dict:
+    """Public-repo single file, no token. Anonymous GitHub API (rate-limited)."""
+    repo = _norm_repo(req.get("repo"))
+    path = (req.get("path") or "").strip()
+    if not repo:
+        return {"error": "Enter a public repository as owner/repo."}
+    if not path:
+        return {"error": "path required"}
+    try:
+        from . import github
+        return github.get_public_file(repo, path, (req.get("ref") or "").strip() or None)
+    except Exception as exc:
+        return {"error": str(exc)}
+
+
 @app.post("/github/push")
 def github_push(req: dict) -> dict:
     tok = _gh_token()
