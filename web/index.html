@@ -181,6 +181,7 @@
   .panel p.h{color:var(--muted);margin:0 0 14px;font-size:13px;}
   .settings-wrap{max-width:760px;margin:0 auto;}
   .settings-wrap .panel{max-width:none;padding:22px 24px;}
+  .settings-wrap input[type=checkbox]{width:18px;height:18px;accent-color:var(--accent);cursor:pointer;flex:none;}
   .row{display:flex;align-items:center;justify-content:space-between;gap:14px;padding:10px 0;border-top:1px solid var(--line);}
   .row:first-of-type{border-top:0;}
   select,input[type=text],textarea{background:var(--surface2);color:var(--ink);border:1px solid var(--line);border-radius:9px;padding:9px 12px;font:inherit;transition:border-color .15s ease;}
@@ -301,6 +302,14 @@
   .plan-step-done .pchk{width:18px;height:18px;border-radius:50%;background:color-mix(in srgb,var(--done) 16%,transparent);color:var(--done);display:grid;place-items:center;flex:0 0 auto;}
   .plan-step-done .pchk svg{width:12px;height:12px;}
   .plan-prop{background:var(--accent-soft);border:1px solid var(--accent);border-radius:12px;padding:14px;}
+  .plan-batch{display:flex;flex-direction:column;gap:9px;}
+  .plan-card{display:flex;align-items:flex-start;gap:10px;background:var(--accent-soft);border:1px solid var(--accent);border-radius:12px;padding:11px 12px;}
+  .plan-rank{flex:0 0 auto;width:20px;height:20px;border-radius:50%;background:color-mix(in srgb,var(--accent) 24%,transparent);color:var(--accent);font-size:11px;font-weight:700;display:grid;place-items:center;margin-top:1px;}
+  .plan-card-body{flex:1;min-width:0;}
+  .plan-card-t{font-weight:650;color:var(--ink);font-size:13px;line-height:1.35;}
+  .plan-card-d{color:var(--muted);font-size:12px;line-height:1.5;margin-top:3px;}
+  .plan-card .plan-add{flex:0 0 auto;padding:5px 8px;}
+  .plan-card .plan-add svg{width:14px;height:14px;}
   .trace{position:fixed;inset:0;display:none;z-index:250;}
   .trace.open{display:block;}
   .trace-back{position:absolute;inset:0;background:rgba(0,0,0,.3);}
@@ -462,7 +471,7 @@ function render(){
   else if(store.view==='models'){ title.innerHTML='Models'; v.innerHTML=modelsHTML(); wireModels(); if(!modelData) loadModels().then(()=>{ if(store.view==='models') render(); }); }
   else if(store.view==='github'){ title.innerHTML='GitHub'; v.innerHTML=githubHTML(); wireGithub(); }
   else if(store.view==='workshop'){ title.innerHTML='Marshal Workshop'; v.innerHTML=workshopHTML(); wireWorkshop(); if(!workshopCaps) loadWorkshop().then(()=>{ if(store.view==='workshop') render(); }); if(!modelData) loadModels().then(()=>{ if(store.view==='workshop') render(); }); }
-  else if(store.view==='settings'){ title.innerHTML='Settings'; v.innerHTML=settingsHTML(); wireSettings(); if(!modelData) loadModels().then(()=>{ if(store.view==='settings') render(); }); if(!fcfg) loadFoundryConfig().then(()=>{ if(store.view==='settings') render(); }); }
+  else if(store.view==='settings'){ title.innerHTML='Settings'; v.innerHTML=settingsHTML(); wireSettings(); if(!modelData) loadModels().then(()=>{ if(store.view==='settings') render(); }); if(!fcfg) loadFoundryConfig().then(()=>{ if(store.view==='settings') render(); }); if(!spendData) loadSpend().then(()=>{ if(store.view==='settings') render(); }); }
 }
 
 function renderPins(){
@@ -544,13 +553,17 @@ function togglePin(id){
   else { if(store.pinned.length>=3){ toast('You can pin up to 3 projects to the sidebar.'); return; } store.pinned.push(id); }
   persist(); render();
 }
+function addProject(r){
+  const p={id:uid(),name:r.name,desc:r.desc||'',members:[{name:'You',kind:'human',c:'#3fce7e'},{name:'Orchestrator',kind:'ai',c:'#a855f7'}],tasks:[]};
+  store.projects.push(p); persist();
+  return p;
+}
 async function newProject(){
   const r=await uiPrompt({title:'New project', fields:[
     {id:'name',label:'Project name',placeholder:'e.g. Marketing site'},
     {id:'desc',label:'Description (optional)',placeholder:'What is this project about?'}], okText:'Create'});
   if(!r || !r.name) return;
-  const p={id:uid(),name:r.name,desc:r.desc||'',members:[{name:'You',kind:'human',c:'#3fce7e'},{name:'Orchestrator',kind:'ai',c:'#a855f7'}],tasks:[]};
-  store.projects.push(p); persist(); nav('kanban',p.id);
+  nav('kanban', addProject(r).id);
 }
 
 // ===== Kanban =====
@@ -741,6 +754,7 @@ async function runAgents(p, goalArg){
       case 'done': { finished=true; agentsRunning=false; const b=m.budget||{}; const ans=deEm(m.answer||''); runMeta.answer=ans; runMeta.spend=b.spent_usd; runMeta.budgetUsd=b.budget_usd; runMeta.charges=b.charges; runMeta.citations=dedupeCitations(groundHits); escalateWeak(); reflect(); render(); showMarshalResult(ans||'(no answer produced)', b, groundHits, p.id); toast('Marshal finished · $'+(b.spent_usd??0)+' · '+(b.charges??'?')+' calls'); break; }
       case 'refused': finished=true; agentsRunning=false; render(); uiInfo({title:'Marshal declined', body:m.reason||'The request was refused.'}); break;
       case 'error': finished=true; agentsRunning=false; render(); toast('Marshal error: '+(m.message||'unknown')); break;
+      case 'spend_total': if(spendData){ spendData.total_spend_usd=m.total_spend_usd; spendData.total_runs=m.total_runs; } break;
     }
     recordTrace(m);   // after the switch, so runMeta (answer/spend) is set before the terminal trace render
   };
@@ -927,7 +941,7 @@ document.addEventListener('keydown',e=>{
 
 function toast(msg, ms=2600){ let el=$('toast'); if(!el){ el=document.createElement('div'); el.id='toast'; el.className='toast'; document.body.appendChild(el); } el.textContent=msg; el.classList.add('show'); clearTimeout(el._t); el._t=setTimeout(()=>el.classList.remove('show'), ms); }
 
-function uiConfirm({title, body='', okText='Confirm', danger=false}){ return new Promise(res=>{ _modalResolve=res; showModal(`<h3>${esc(title)}</h3>${body?`<p class="h" style="color:var(--muted);margin:0 0 16px;font-size:13px">${esc(body)}</p>`:''}<div class="modal-foot"><button class="btn ghost sm" id="m-cancel">Cancel</button><button class="btn sm ${danger?'danger':''}" id="m-ok">${esc(okText)}</button></div>`); $('m-ok').onclick=()=>closeModal(true); $('m-cancel').onclick=()=>closeModal(false); }); }
+function uiConfirm({title, body='', okText='Confirm', cancelText='Cancel', danger=false}){ return new Promise(res=>{ _modalResolve=res; showModal(`<h3>${esc(title)}</h3>${body?`<p class="h" style="color:var(--muted);margin:0 0 16px;font-size:13px">${esc(body)}</p>`:''}<div class="modal-foot"><button class="btn ghost sm" id="m-cancel">${esc(cancelText)}</button><button class="btn sm ${danger?'danger':''}" id="m-ok">${esc(okText)}</button></div>`); $('m-ok').onclick=()=>closeModal(true); $('m-cancel').onclick=()=>closeModal(false); }); }
 
 function uiInfo({title, body='', okText='Got it'}){ return new Promise(res=>{ _modalResolve=res; showModal(`<h3>${esc(title)}</h3>${body?`<p class="h" style="color:var(--muted);margin:0 0 16px;font-size:13px">${esc(body)}</p>`:''}<div class="modal-foot" style="justify-content:flex-end"><button class="btn sm" id="m-ok">${esc(okText)}</button></div>`); $('m-ok').onclick=()=>closeModal(true); }); }
 
@@ -943,6 +957,16 @@ async function loadFoundryConfig(force){
   catch(e){ fcfg={error:String((e&&e.message)||e)}; }
   return fcfg;
 }
+// ===== Spend + settings (budget monitor, model source, subagents) =====
+let spendData=null;
+async function loadSpend(force){
+  if(spendData && !force) return spendData;
+  try{ const ctl=new AbortController(); const to=setTimeout(()=>ctl.abort(),6000);
+    const r=await fetch('/spend',{signal:ctl.signal}); clearTimeout(to); spendData=await r.json(); }
+  catch(e){ spendData={error:String((e&&e.message)||e)}; }
+  return spendData;
+}
+function fmtUSD(n){ const v=Number(n)||0; return '$'+(v<1 ? v.toFixed(4).replace(/0+$/,'').replace(/\.$/,'') : v.toFixed(2)); }
 function foundryStatusHTML(){
   if(!fcfg) return '<span class="muted">checking…</span>';
   if(fcfg.error) return '<span style="color:#e0607e">backend unreachable</span>';
@@ -950,17 +974,37 @@ function foundryStatusHTML(){
   if(fcfg.auth_ok) return `<span style="color:var(--done)">connected · ${(fcfg.models||[]).length} deployments</span>`;
   return '<span style="color:var(--review)">endpoint set, not signed in (run az login)</span>';
 }
+// Build the deployment dropdown options for the Connect modal: an auto-pick option plus each chat deployment.
+function connectModelOptions(chatModels, current){
+  const opts=[{value:'', label:'Auto — first chat model'}];
+  (chatModels||[]).forEach(function(name){ opts.push({value:name, label:name}); });
+  if(current && !(chatModels||[]).includes(current)) opts.push({value:current, label:current+' (current)'});
+  return opts;
+}
 async function connectFoundry(){
   const cur=fcfg||{};
-  const r=await uiPrompt({title:'Connect Microsoft Foundry', fields:[
-    {id:'endpoint',label:'Project endpoint',value:cur.project_endpoint||'',placeholder:'https://<resource>.services.ai.azure.com/api/projects/<project>',hint:'From the Foundry portal. Sign in first in your terminal with:  az login'},
-    {id:'worker',label:'Reasoning model (optional)',value:cur.worker_model||'',placeholder:'leave blank to auto-pick',hint:'A deployment name from your project; blank picks the first chat model.'}
+  const r1=await uiPrompt({title:'Connect Microsoft Foundry', fields:[
+    {id:'endpoint',label:'Project endpoint',value:cur.project_endpoint||'',placeholder:'https://<resource>.services.ai.azure.com/api/projects/<project>',hint:'From the Foundry portal. Sign in first in your terminal with:  az login'}
+  ], okText:'Next'});
+  if(!r1) return;
+  const ep=(r1.endpoint||'').trim(); if(!ep){ toast('Enter your project endpoint.'); return; }
+  toast('Reading your deployments…');
+  let chat=null;
+  try{
+    const res=await fetch('/deployments',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({project_endpoint:ep})});
+    const d=await res.json();
+    if(d.ok){ chat=d.chat_models||[]; }
+    else { uiInfo({title:'Could not read deployments', body:(d.error||'Failed.')+(d.auth_hint?('  '+d.auth_hint):'')}); return; }
+  }catch(e){ uiInfo({title:'Could not read deployments', body:'Could not reach the backend.'}); return; }
+  const curModel=(ep===(cur.project_endpoint||''))?(cur.worker_model||''):'';
+  const r2=await uiPrompt({title:'Connect Microsoft Foundry', fields:[
+    {id:'worker',label:'Reasoning model',select:true,value:curModel,options:connectModelOptions(chat,curModel),
+      hint:(chat&&chat.length)?'One deployment drives Marshal\'s reasoning. The chat picker overrides it per chat.':'No chat deployments found — deploy a model in Foundry, or use Auto.'}
   ], okText:'Connect'});
-  if(!r) return;
-  const ep=(r.endpoint||'').trim(); if(!ep){ toast('Enter your project endpoint.'); return; }
+  if(!r2) return;
   toast('Connecting to Foundry…');
   try{
-    const res=await fetch('/connect',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({project_endpoint:ep, worker_model:(r.worker||'').trim()})});
+    const res=await fetch('/connect',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({project_endpoint:ep, worker_model:(r2.worker||'').trim()})});
     const data=await res.json();
     if(!data.ok){ uiInfo({title:'Could not connect', body:(data.error||'Connection failed.')+(data.auth_hint?('  '+data.auth_hint):'')}); return; }
     toast('Connected. '+(data.models||[]).length+' deployment(s) available.');
@@ -1039,6 +1083,53 @@ function wireWorkshop(){
   }; });
 }
 
+// ===== Settings panels: budget/spend, model source, subagents =====
+function budgetPanelHTML(){
+  const s = spendData || {};
+  const total = s.error ? '—' : fmtUSD(s.total_spend_usd);
+  const runs  = s.error ? '' : (' · '+(s.total_runs||0)+' run'+((s.total_runs===1)?'':'s'));
+  const curBudget = (s.budget_usd!=null) ? String(s.budget_usd) : ((fcfg&&fcfg.budget_usd!=null)?String(fcfg.budget_usd):'0.5');
+  const PRESETS=[['0.25','$0.25 · quick'],['0.5','$0.50 · balanced'],['1','$1.00'],['2','$2.00 · thorough'],['5','$5.00 · deep']];
+  const has = PRESETS.some(p=>p[0]===curBudget);
+  const opts = (has?'':`<option value="${esc(curBudget)}" selected>$${esc(curBudget)} · current</option>`)
+    + PRESETS.map(p=>`<option value="${p[0]}" ${p[0]===curBudget?'selected':''}>${p[1]}</option>`).join('');
+  return `<div class="panel"><h2>Budget and spend</h2>
+    <p class="h">Marshal's Budget Governor caps spend per question and holds back a reserve so it can always finish. This is the lifetime total across every run (demo runs included).</p>
+    <div class="row"><div>Spent so far</div><div style="text-align:right;font-size:18px;font-weight:600">${total}<span class="muted" style="font-size:12px;font-weight:400">${runs}</span></div></div>
+    <div class="row"><div>Per-question budget<div class="muted" style="font-size:12px">The default cap for each run. The run dialog can still override it.</div></div>
+      <select id="s-budget">${opts}</select></div>
+    <div class="row" style="border-top:0;padding-top:10px;justify-content:space-between;gap:8px">
+      <button class="btn sm ghost" id="s-spend-reset">Reset spend counter</button>
+      <button class="btn sm" id="s-budget-save">Save budget</button></div></div>`;
+}
+function modelSourcePanelHTML(){
+  const src = ((spendData&&spendData.model_source) || (fcfg&&fcfg.model_source) || 'foundry');
+  const ollamaUp = !!(modelData && modelData.ollama && modelData.ollama.running);
+  return `<div class="panel"><h2>Model source</h2>
+    <p class="h">Where Marshal's models run. Foundry is the recommended path. Local runs on an Ollama daemon on this machine.</p>
+    <div class="seg" id="s-source-seg" style="margin:6px 0 4px">
+      <button data-src="foundry" class="${src==='foundry'?'on':''}">Microsoft Foundry</button>
+      <button data-src="local" class="${src==='local'?'on':''}">Local (Ollama)</button></div>
+    <div class="muted" style="font-size:12px;margin-top:6px">
+      ${src==='local'
+        ? ('Local saved as your preference. '+(ollamaUp?'An Ollama daemon is running on this machine.':'No Ollama daemon detected on localhost:11434.')+' Local routing in the reasoning loop is still being wired, so runs currently fall back to Foundry.')
+        : 'Marshal runs on your connected Foundry project.'}
+    </div></div>`;
+}
+function subagentsPanelHTML(){
+  const sEnabled = (spendData && 'subagents_enabled' in spendData) ? !!spendData.subagents_enabled
+                 : (fcfg && 'subagents_enabled' in fcfg) ? !!fcfg.subagents_enabled : true;
+  const sAi = (spendData && 'ai_can_spawn_subagents' in spendData) ? !!spendData.ai_can_spawn_subagents
+            : (fcfg && 'ai_can_spawn_subagents' in fcfg) ? !!fcfg.ai_can_spawn_subagents : false;
+  return `<div class="panel"><h2>Subagents</h2>
+    <p class="h">Subagents let Marshal break work across more specialised helpers. Running many at once can get expensive.</p>
+    <label class="row" style="cursor:pointer"><div><strong>Enable subagents</strong><div class="muted" style="font-size:12px">Allow Marshal to use subagents while reasoning.</div></div>
+      <input type="checkbox" id="s-sub-enabled" ${sEnabled?'checked':''}></label>
+    <label class="row" style="cursor:pointer;border-top:0;padding-top:6px"><div><strong>Let Marshal spawn subagents on its own</strong><div class="muted" style="font-size:12px">Marshal may create new subagents without asking. Off means it only uses ones you set up.</div></div>
+      <input type="checkbox" id="s-sub-ai" ${sAi?'checked':''} ${sEnabled?'':'disabled'}></label>
+    <div class="row" style="border-top:0;padding-top:10px;justify-content:flex-end"><button class="btn sm" id="s-sub-save">Save subagent settings</button></div></div>`;
+}
+
 function settingsHTML(){
   return `<div class="settings-wrap"><div class="panel"><h2>Appearance</h2><p class="h">Pick a theme. The toggle in the sidebar flips light/dark.</p>
       <div class="row"><div>Theme</div><select id="s-theme">${THEMES.map(t=>`<option value="${t[0]}" ${store.theme===t[0]?'selected':''}>${t[1]}</option>`).join('')}</select></div></div>
@@ -1048,6 +1139,9 @@ function settingsHTML(){
       <div class="row"><div>Reasoning model</div><div style="text-align:right;font-size:13px">${esc((fcfg&&fcfg.worker_model)||activeFoundryModel()||'—')}</div></div>
       <div class="row" style="border-top:0;padding-top:0;justify-content:flex-end;gap:8px"><button class="btn sm ghost" onclick="nav('models')">Open Models</button><button class="btn sm" id="s-connect">${(fcfg&&fcfg.connected)?'Change connection':'Connect Foundry'}</button></div></div>
     ${roleModelsPanelHTML()}
+    ${budgetPanelHTML()}
+    ${modelSourcePanelHTML()}
+    ${subagentsPanelHTML()}
     <div class="panel"><h2>Marshal learns you</h2><p class="h">Marshal keeps a master file of how you like to work and adapts to it. It fills in as you go, and you can edit it directly.</p>
       <div class="row"><div class="muted">Learned so far</div><div style="text-align:right;font-size:13px">theme <strong>${esc(store.theme)}</strong> · Microsoft Foundry${activeFoundryModel()?' · '+esc(activeFoundryModel()):''}</div></div>
       <div style="padding:12px 0"><label for="s-notes">Master file: what Marshal remembers about you</label>
@@ -1072,6 +1166,57 @@ function wireSettings(){
     catch(e){ toast('Backend unreachable.'); rsave.textContent='Save role models'; rsave.disabled=false; }
   };
   const rsame=$('s-roles-same'); if(rsame) rsame.onclick=()=>{ const w=document.querySelector('[data-role="worker_model"]'); if(!w) return; document.querySelectorAll('[data-role]').forEach(s=> s.value=w.value); toast('Set all roles to '+w.value+'. Save to apply.'); };
+
+  // --- Budget ---
+  const bsave=$('s-budget-save'); if(bsave) bsave.onclick=async()=>{
+    const val=parseFloat(($('s-budget')||{}).value)||0.5;
+    bsave.textContent='Saving…'; bsave.disabled=true;
+    try{ const r=await fetch('/settings',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({budget_usd:val})});
+      const d=await r.json(); if(d.ok){ if(spendData) spendData.budget_usd=d.budget_usd; if(fcfg) fcfg.budget_usd=d.budget_usd; toast('Per-question budget set to '+fmtUSD(d.budget_usd)+'.'); }
+      else toast('Could not save budget.'); }
+    catch(e){ toast('Backend unreachable.'); }
+    bsave.textContent='Save budget'; bsave.disabled=false;
+  };
+  const breset=$('s-spend-reset'); if(breset) breset.onclick=async()=>{
+    const ok=await uiConfirm({title:'Reset spend counter?', body:'This clears the lifetime spend total and run count. It does not affect any run.', okText:'Reset'});
+    if(!ok) return;
+    try{ const r=await fetch('/settings',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({reset_spend:true})});
+      const d=await r.json(); if(d.ok){ spendData=null; await loadSpend(true); toast('Spend counter reset.'); render(); } }
+    catch(e){ toast('Backend unreachable.'); }
+  };
+
+  // --- Model source (WARNING before switching to local) ---
+  document.querySelectorAll('#s-source-seg [data-src]').forEach(b=> b.onclick=async()=>{
+    const target=b.dataset.src;
+    const cur=((spendData&&spendData.model_source)||(fcfg&&fcfg.model_source)||'foundry');
+    if(target===cur) return;
+    if(target==='local'){
+      const ok=await uiConfirm({
+        title:'Switch to local models?',
+        body:'Local models run on an Ollama daemon on this PC. They are MUCH slower than Foundry unless you have a strong machine (a capable GPU and plenty of RAM). Responses may take minutes, and large models may not run at all. Note: local routing is still being wired, so runs currently fall back to Foundry. You can switch back any time.',
+        okText:'Save local preference', cancelText:'Stay on Foundry'});
+      if(!ok) return;
+    }
+    try{ const r=await fetch('/settings',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({model_source:target})});
+      const d=await r.json(); if(d.ok){
+        if(spendData) spendData.model_source=d.model_source; if(fcfg) fcfg.model_source=d.model_source;
+        toast(target==='local'?'Saved local as your preference.':'Switched to Microsoft Foundry.'); render(); }
+      else toast('Could not change model source.'); }
+    catch(e){ toast('Backend unreachable.'); }
+  });
+
+  // --- Subagents ---
+  const subEn=$('s-sub-enabled'), subAi=$('s-sub-ai');
+  if(subEn) subEn.onchange=()=>{ if(subAi){ subAi.disabled=!subEn.checked; if(!subEn.checked) subAi.checked=false; } };
+  const subSave=$('s-sub-save'); if(subSave) subSave.onclick=async()=>{
+    const body={ subagents_enabled: !!(subEn&&subEn.checked), ai_can_spawn_subagents: !!(subAi&&subAi.checked) };
+    subSave.textContent='Saving…'; subSave.disabled=true;
+    try{ const r=await fetch('/settings',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+      const d=await r.json(); if(d.ok){ if(spendData){ spendData.subagents_enabled=d.subagents_enabled; spendData.ai_can_spawn_subagents=d.ai_can_spawn_subagents; } if(fcfg){ fcfg.subagents_enabled=d.subagents_enabled; fcfg.ai_can_spawn_subagents=d.ai_can_spawn_subagents; } toast('Subagent settings saved.'); }
+      else toast('Could not save subagent settings.'); }
+    catch(e){ toast('Backend unreachable.'); }
+    subSave.textContent='Save subagent settings'; subSave.disabled=false;
+  };
 }
 function downloadMasterFile(){
   const body = (store.profileNotes||'').trim() || '(empty, Marshal has not learned anything yet)';
@@ -1088,13 +1233,48 @@ function downloadMasterFile(){
 
 // ===== Chat (talk to a model directly; runs locally on your Claude subscription) =====
 let chatBusy=false;
-function chatGroundProject(){ return project(store.current) || project((store.pinned||[])[0]) || store.projects[0] || null; }
+// The project the chat targets. Explicit pick wins; self-heal if it was deleted.
+// projectId===null => "No project (just chat)"; undefined => legacy auto-pick.
+function chatProject(){
+  const pid = store.chat.projectId;
+  if(pid === null) return null;
+  if(pid){ const p = project(pid); if(p) return p; store.chat.projectId = undefined; }
+  return project(store.current) || project((store.pinned||[])[0]) || store.projects[0] || null;
+}
+function chatGroundProject(){ return chatProject(); }
+function chatProjectSelectHTML(){
+  const cur = store.chat.projectId, targeted = chatProject();
+  const isSel = (id)=> cur===undefined ? (targeted && targeted.id===id) : cur===id;
+  const opts = store.projects.map(p=>`<option value="${esc(p.id)}" ${isSel(p.id)?'selected':''}>${esc(p.name)}</option>`).join('');
+  return `<label class="ground-pick" title="Project this chat is working on">${I.folder||''}<select id="chat-project">`+opts+
+    `<option value="__none__" ${cur===null?'selected':''}>No project (just chat)</option>`+
+    `<option value="__new__">+ Create a new project…</option></select></label>`;
+}
+async function onChatProjectPick(value){
+  if(value === '__new__'){ await createProjectInChat(); return; }
+  if(value === '__none__'){ store.chat.projectId = null; store.chat.source = 'none'; persist(); render(); return; }
+  const p = project(value); if(!p){ render(); return; }
+  store.chat.projectId = p.id;
+  if((store.chat.source||'project') === 'none') store.chat.source = 'project';
+  persist(); toast('Chat is now working on “'+p.name+'”.'); render();
+}
+async function createProjectInChat(){
+  const r=await uiPrompt({title:'New project', fields:[
+    {id:'name',label:'Project name',placeholder:'e.g. Marketing site'},
+    {id:'desc',label:'Description (optional)',placeholder:'What is this project about?'}], okText:'Create project'});
+  if(!r || !r.name){ render(); return; }
+  const p=addProject(r);
+  store.chat.projectId = p.id;
+  if((store.chat.source||'project') === 'none') store.chat.source = 'project';
+  persist(); toast('Created “'+p.name+'”. Chat is now working on it.'); render();
+}
 // The model library is whatever you have deployed in your Foundry project (live from /models).
 function chatModels(){ try{ return ((modelData&&modelData.foundry&&modelData.foundry.deployments)||[]).filter(d=>d.kind!=='embedding'); }catch(e){ return []; } }
 function chatHTML(){
   const m=store.chat;
   const src=m.source||'project';
   const gp=chatGroundProject();
+  const projSel=chatProjectSelectHTML();
   const groundSel=`<label class="ground-pick" title="What Marshal grounds its answers on">${I.book||''}<select id="chat-source">`+
     groundOptions().map(o=>`<option value="${o.value}" ${o.value===src?'selected':''} ${o.disabled?'disabled':''}>${esc(o.label)}</option>`).join('')+`</select></label>`;
   const models=chatModels(); const names=models.map(d=>d.name);
@@ -1107,6 +1287,7 @@ function chatHTML(){
   return `<div class="chat-wrap">
     <div class="chat-head">
       <span class="pill">Microsoft Foundry</span>
+      ${projSel}
       ${modelSel}
       ${groundSel}
       <span style="flex:1"></span>
@@ -1124,6 +1305,7 @@ function wireChat(){
   const box=$('chat-msgs'); if(box) box.scrollTop=box.scrollHeight;
   const clr=$('chat-clear'); if(clr) clr.onclick=async()=>{ if(!store.chat.messages.length) return; const ok=await uiConfirm({title:'Clear chat?',body:'This removes the current conversation.',okText:'Clear',danger:true}); if(ok){ store.chat.messages=[]; persist(); render(); } };
   const sel=$('chat-source'); if(sel) sel.onchange=()=>{ store.chat.source=sel.value; persist(); render(); };
+  const psel=$('chat-project'); if(psel) psel.onchange=()=>onChatProjectPick(psel.value);
   const msel=$('chat-model'); if(msel) msel.onchange=()=>{ store.chat.model=msel.value; persist(); toast('Now using '+msel.value+'.'); };
   const ta=$('chat-text'), send=$('chat-send');
   if(send) send.onclick=()=>sendChat();
@@ -1373,8 +1555,8 @@ function renderWizard(){
 }
 
 // ===== Step-by-step planner (Marshal proposes one step; you add / edit / skip) =====
-let planProject=null, planGoal='', planSteps=[], planSkipped=[], planProposed=null, planBusy=false, planDone=false, planEditing=false;
-function openPlan(p){ planProject=p; planGoal=(p.desc||p.name||'').trim(); planSteps=[]; planSkipped=[]; planProposed=null; planDone=false; planEditing=false; overlayCapture(); $('plan').classList.add('open'); renderPlan(); proposeNext(); }
+let planProject=null, planGoal='', planSteps=[], planBatch=[], planFocus='', planBusy=false, planErr='';
+function openPlan(p){ planProject=p; planGoal=(p.desc||p.name||'').trim(); planSteps=[]; planBatch=[]; planFocus=''; planErr=''; overlayCapture(); $('plan').classList.add('open'); renderPlan(); planBatchRun(); }
 function closePlan(){ $('plan').classList.remove('open'); overlayRestore(); }
 
 // ===== Reasoning trace (live timeline of the streamed run) + run report export =====
@@ -1406,80 +1588,88 @@ function exportRunReport(){
   document.body.appendChild(a); a.click(); setTimeout(()=>{ URL.revokeObjectURL(a.href); a.remove(); },0);
   toast('Run report downloaded.');
 }
-async function proposeNext(){
-  planBusy=true; planProposed=null; planEditing=false; renderPlan();
-  try{
-    const res=await fetch('/plan-next',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({goal:planGoal, steps:planSteps, skipped:planSkipped, project:{name:planProject.name,desc:planProject.desc}})});
-    const data=await res.json();
-    if(data.error) toast('Planner error: '+data.error);
-    if(data.done || !data.title) planDone=true;
-    else planProposed={title:data.title, detail:data.detail||''};
-  }catch(e){ toast('Could not reach the planner.'); planDone=true; }
-  planBusy=false; renderPlan();
-}
-function addProposed(){
-  if(!planProposed) return;
-  planProject.tasks.push({id:uid(), title:planProposed.title, notes:planProposed.detail||'', assignee:'Orchestrator', col:'todo'});
-  planSteps.push({title:planProposed.title, detail:planProposed.detail||''});
-  persist(); if(store.view==='kanban' && store.current===planProject.id) render();
-  proposeNext();
-}
-function skipProposed(){ if(planProposed) planSkipped.push(planProposed.title); proposeNext(); }
-async function planAll(){
+// Fetch a fresh importance-ordered batch from /plan-all. `focus` (optional) steers it.
+async function planBatchRun(focus){
   if(planBusy) return;
-  planBusy=true; planEditing=false; planProposed=null; renderPlan();
+  planBusy=true; planErr=''; planBatch=[]; renderPlan();
+  const body={ goal:planGoal, steps:planSteps, project:{name:planProject.name,desc:planProject.desc} };
+  if(focus){ body.focus=focus; planFocus=focus; }
   try{
-    const res=await fetch('/plan-all',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({goal:planGoal, steps:planSteps, project:{name:planProject.name,desc:planProject.desc}})});
+    const res=await fetch('/plan-all',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
     const data=await res.json();
-    if(data.error){ toast('Planner error: '+data.error); planBusy=false; renderPlan(); return; }
-    const steps=data.steps||[];
-    steps.forEach(s=>{ planProject.tasks.push({id:uid(), title:s.title, notes:s.detail||'', assignee:'Orchestrator', col:'todo'}); planSteps.push({title:s.title, detail:s.detail||''}); });
-    if(steps.length){ persist(); if(store.view==='kanban' && store.current===planProject.id) render(); toast(steps.length+' step(s) added to the board.'); }
-    else toast('Marshal proposed no further steps.');
-    planDone=true;
-  }catch(e){ toast('Could not reach the planner.'); }
+    if(data.error){ planErr=data.error; }
+    planBatch=(data.steps||[]).map(s=>({title:s.title, detail:s.detail||''}));
+    if(!planErr && !planBatch.length) planErr='Marshal proposed no further cards.';
+  }catch(e){ planErr='Could not reach the planner.'; }
   planBusy=false; renderPlan();
+}
+function addBatchCard(i){
+  const s=planBatch[i]; if(!s) return;
+  planProject.tasks.push({id:uid(), title:s.title, notes:s.detail||'', assignee:'Orchestrator', col:'todo'});
+  planSteps.push({title:s.title, detail:s.detail||''});
+  planBatch.splice(i,1);
+  persist(); if(store.view==='kanban' && store.current===planProject.id) render();
+  toast('Added "'+s.title+'" to the board.');
+  renderPlan();
+}
+function addBatchAll(){
+  if(!planBatch.length) return;
+  const n=planBatch.length;
+  planBatch.forEach(s=>{ planProject.tasks.push({id:uid(), title:s.title, notes:s.detail||'', assignee:'Orchestrator', col:'todo'}); planSteps.push({title:s.title, detail:s.detail||''}); });
+  planBatch=[];
+  persist(); if(store.view==='kanban' && store.current===planProject.id) render();
+  toast(n+' card(s) added to the board.');
+  renderPlan();
 }
 function renderPlan(){
   const w=$('plan'); if(!w) return;
   const doneList = planSteps.map(s=>`<div class="plan-step-done"><span class="pchk">${I.check}</span><span style="color:var(--ink)">${esc(s.title)}</span></div>`).join('');
-  let prop='';
+  let batch='';
   if(planBusy){
-    prop=`<div class="muted" style="font-size:13px;padding:6px 0">Marshal is thinking about the next step…</div>`;
-  } else if(planDone){
-    prop=`<div class="plan-prop" style="background:color-mix(in srgb,var(--done) 12%,transparent);border-color:var(--done)"><div style="font-weight:650;color:var(--ink);margin-bottom:4px">Plan complete</div><div class="muted" style="font-size:12.5px">Marshal has no more steps to propose. ${planSteps.length} step(s) on the board.</div></div>`;
-  } else if(planProposed && planEditing){
-    prop=`<div class="plan-prop"><label style="font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.5px">Title</label><input id="plan-t" type="text" value="${esc(planProposed.title)}" style="width:100%;margin:5px 0 11px"><label style="font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.5px">Detail</label><textarea id="plan-d" style="width:100%;min-height:64px;margin-top:5px">${esc(planProposed.detail||'')}</textarea><div style="display:flex;gap:8px;justify-content:flex-end;margin-top:12px"><button class="btn ghost sm" data-p="caned">Cancel</button><button class="btn sm" data-p="addedit">${I.plus} Add to board</button></div></div>`;
-  } else if(planProposed){
-    prop=`<div class="plan-prop"><div style="font-weight:650;color:var(--ink);margin-bottom:6px">${esc(planProposed.title)}</div><div class="muted" style="font-size:12.5px;line-height:1.55;margin-bottom:13px">${esc(planProposed.detail||'')}</div><div style="display:flex;gap:8px;justify-content:flex-end;align-items:center"><button class="wiz-skip" data-p="skip">Skip</button><button class="btn ghost sm" data-p="edit">Edit</button><button class="btn sm" data-p="add">${I.plus} Add to board</button></div></div>`;
+    batch=`<div class="muted" style="font-size:13px;padding:6px 0">Marshal is drawing up the plan…</div>`;
+  } else if(planErr){
+    batch=`<div class="plan-prop" style="background:color-mix(in srgb,var(--done) 12%,transparent);border-color:var(--line)"><div class="muted" style="font-size:12.5px">${esc(planErr)}</div></div>`;
+  } else if(planBatch.length){
+    batch=planBatch.map((s,i)=>`<div class="plan-card">
+        <div class="plan-rank">${i+1}</div>
+        <div class="plan-card-body"><div class="plan-card-t">${esc(s.title)}</div>${s.detail?`<div class="plan-card-d">${esc(s.detail)}</div>`:''}</div>
+        <button class="btn ghost sm plan-add" data-p="addone" data-i="${i}" title="Add to board">${I.plus}</button>
+      </div>`).join('');
+  } else {
+    batch=`<div class="muted" style="font-size:12.5px;padding:4px 0">No cards in the batch. Steer Marshal below, or re-plan.</div>`;
   }
+  const canAddAll = !planBusy && planBatch.length>0;
   w.innerHTML=`<div class="plan-back" data-p="close"></div><div class="plan-draw">
     <div style="display:flex;align-items:center;gap:10px;margin-bottom:14px"><span class="pmark">${WMARK()}</span><span style="font-size:15px;font-weight:650;color:var(--ink)">Plan with Marshal</span><span style="flex:1"></span><button class="iconbtn" data-p="close" title="Close">✕</button></div>
     <label style="font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.5px">Goal</label>
     <input id="plan-goal" type="text" value="${esc(planGoal)}" style="width:100%;margin:5px 0 16px">
-    ${doneList?`<div style="font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.5px;margin-bottom:9px">Added to board</div>${doneList}<div style="height:10px"></div>`:''}
-    ${(!planDone && !planBusy)?`<div style="font-size:11px;color:var(--accent);text-transform:uppercase;letter-spacing:.5px;margin-bottom:9px">Marshal proposes</div>`:''}
-    ${prop}
+    <label style="font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.5px">Steer (optional)</label>
+    <div style="display:flex;gap:8px;margin:5px 0 16px">
+      <input id="plan-focus" type="text" value="${esc(planFocus)}" placeholder="e.g. focus on tests and CI, or ship an MVP first" style="flex:1" ${planBusy?'disabled':''}>
+      <button class="btn sm" data-p="steer" ${planBusy?'disabled':''}>${I.spark} Steer</button>
+    </div>
+    ${doneList?`<div style="font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.5px;margin-bottom:9px">Added to board</div>${doneList}<div style="height:14px"></div>`:''}
+    <div style="display:flex;align-items:center;gap:8px;margin-bottom:9px">
+      <span style="font-size:11px;color:var(--accent);text-transform:uppercase;letter-spacing:.5px">${planFocus?'Marshal suggests (steered)':'Marshal suggests'}</span>
+      <span style="flex:1"></span>
+      ${canAddAll?`<button class="btn ghost sm" data-p="all">${I.spark} Add all</button>`:''}
+    </div>
+    <div class="plan-batch">${batch}</div>
     <span style="flex:1"></span>
     <div style="display:flex;justify-content:space-between;gap:8px;border-top:1px solid var(--line);padding-top:14px;margin-top:16px">
-      <button class="btn ghost sm" data-p="replan">Re-plan</button>
-      <div style="display:flex;gap:8px">
-        <button class="btn ghost sm" data-p="close">Close</button>
-        <button class="btn sm" data-p="all" ${planBusy?'disabled':''}>${I.spark} Add all at once</button>
-      </div>
+      <button class="btn ghost sm" data-p="replan" ${planBusy?'disabled':''}>Re-plan</button>
+      <button class="btn ghost sm" data-p="close">Close</button>
     </div>
   </div>`;
   w.querySelectorAll('[data-p]').forEach(b=> b.onclick=()=>{
     const a=b.dataset.p;
     if(a==='close') closePlan();
-    else if(a==='add') addProposed();
-    else if(a==='skip') skipProposed();
-    else if(a==='edit'){ planEditing=true; renderPlan(); }
-    else if(a==='caned'){ planEditing=false; renderPlan(); }
-    else if(a==='addedit'){ planProposed={title:($('plan-t').value.trim()||planProposed.title), detail:$('plan-d').value.trim()}; planEditing=false; addProposed(); }
-    else if(a==='replan'){ planGoal=($('plan-goal').value||'').trim(); planSteps=[]; planSkipped=[]; planDone=false; planEditing=false; proposeNext(); }
-    else if(a==='all'){ planGoal=($('plan-goal').value||planGoal||'').trim(); planAll(); }
+    else if(a==='addone') addBatchCard(parseInt(b.dataset.i,10));
+    else if(a==='all') addBatchAll();
+    else if(a==='steer'){ planGoal=($('plan-goal').value||planGoal||'').trim(); const f=($('plan-focus').value||'').trim(); if(!f){ toast('Type a direction to steer towards.'); return; } planBatchRun(f); }
+    else if(a==='replan'){ planGoal=($('plan-goal').value||'').trim(); planFocus=''; const ff=$('plan-focus'); if(ff) ff.value=''; planBatchRun(); }
   });
+  const fb=$('plan-focus'); if(fb) fb.addEventListener('keydown',ev=>{ if(ev.key==='Enter'){ ev.preventDefault(); planGoal=($('plan-goal').value||planGoal||'').trim(); const f=fb.value.trim(); if(f) planBatchRun(f); } });
   const g=$('plan-goal'); if(g) g.onchange=()=>{ planGoal=g.value.trim(); };
   keepFocusIn($('plan'));
 }

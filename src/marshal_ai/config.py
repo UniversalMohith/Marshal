@@ -82,6 +82,21 @@ class Settings:
     budget_usd: float = float(os.getenv("BUDGET_USD", "0.50"))
     budget_reserve_frac: float = float(os.getenv("BUDGET_RESERVE_FRAC", "0.15"))
 
+    # Where Marshal's models run: "foundry" (Azure AI Foundry, the default and
+    # recommended path) or "local" (a local Ollama daemon). Local is much slower
+    # without a strong PC; the UI warns before switching. Local routing in the
+    # reasoning loop is not wired yet, so this is a stored preference for now.
+    model_source: str = os.getenv("MODEL_SOURCE", "foundry")
+
+    # Subagents (coordinated with the subagents feature).
+    subagents_enabled: bool = os.getenv("SUBAGENTS_ENABLED", "1") not in ("0", "false", "False", "")
+    ai_can_spawn_subagents: bool = os.getenv("AI_CAN_SPAWN_SUBAGENTS", "0") in ("1", "true", "True")
+
+    # Cumulative USD spent across ALL runs, accumulated by the server after each
+    # run. Not from env; loaded from .marshal.json on startup (apply_runtime_config).
+    total_spend_usd: float = 0.0
+    total_runs: int = 0
+
     # Swarm sizing.
     max_workers: int = int(os.getenv("MAX_WORKERS", "5"))
     max_self_corrections: int = int(os.getenv("MAX_SELF_CORRECTIONS", "2"))
@@ -104,7 +119,14 @@ _CONFIG_PATH = pathlib.Path(__file__).resolve().parents[2] / ".marshal.json"
 _RUNTIME_KEYS = (
     "project_endpoint", "orchestrator_model", "worker_model", "critic_model",
     "synthesiser_model", "search_endpoint", "knowledge_base",
+    # Settings: budget + model source + subagents.
+    "budget_usd", "model_source", "subagents_enabled", "ai_can_spawn_subagents",
+    "total_spend_usd", "total_runs",
 )
+
+# Keys whose value may legitimately be falsy (0, 0.0, False) and must still be applied.
+_RUNTIME_FALSY_OK = ("budget_usd", "subagents_enabled", "ai_can_spawn_subagents",
+                     "total_spend_usd", "total_runs")
 
 
 def apply_runtime_config() -> None:
@@ -112,7 +134,7 @@ def apply_runtime_config() -> None:
         if _CONFIG_PATH.exists():
             data = json.loads(_CONFIG_PATH.read_text(encoding="utf-8"))
             for k in _RUNTIME_KEYS:
-                if data.get(k):
+                if k in data and (data[k] or k in _RUNTIME_FALSY_OK):
                     setattr(settings, k, data[k])
     except Exception:
         pass
@@ -127,6 +149,30 @@ def save_runtime_config(data: dict) -> None:
         _CONFIG_PATH.write_text(json.dumps(existing, indent=2), encoding="utf-8")
     except Exception:
         pass
+
+
+def add_spend(amount_usd: float) -> dict:
+    """Accumulate one run's spend into the persisted lifetime total. Returns the new totals.
+
+    Reads the file fresh (not just in-memory settings) so concurrent runs and
+    restarts don't clobber the running total. Always succeeds; never raises.
+    """
+    try:
+        amount = float(amount_usd)
+        if not (amount == amount) or amount < 0:  # NaN or negative -> ignore
+            amount = 0.0
+    except (TypeError, ValueError):
+        amount = 0.0
+    try:
+        data = json.loads(_CONFIG_PATH.read_text(encoding="utf-8")) if _CONFIG_PATH.exists() else {}
+    except Exception:
+        data = {}
+    total = float(data.get("total_spend_usd") or 0.0) + amount
+    runs = int(data.get("total_runs") or 0) + (1 if amount > 0 else 0)
+    settings.total_spend_usd = total
+    settings.total_runs = runs
+    save_runtime_config({"total_spend_usd": round(total, 6), "total_runs": runs})
+    return {"total_spend_usd": round(total, 6), "total_runs": runs}
 
 
 apply_runtime_config()

@@ -59,6 +59,11 @@ def get_config() -> dict:
         "search_endpoint": settings.search_endpoint,
         "knowledge_base": settings.knowledge_base,
         "foundry_iq_configured": bool(settings.search_endpoint and settings.knowledge_base),
+        "model_source": settings.model_source,
+        "subagents_enabled": bool(settings.subagents_enabled),
+        "ai_can_spawn_subagents": bool(settings.ai_can_spawn_subagents),
+        "total_spend_usd": round(float(settings.total_spend_usd or 0.0), 6),
+        "total_runs": int(settings.total_runs or 0),
         "auth_ok": False,
         "auth_error": None,
         "models": [],
@@ -70,6 +75,38 @@ def get_config() -> dict:
         except Exception as exc:
             out["auth_error"] = f"{type(exc).__name__}: {exc}"
     return out
+
+
+@app.get("/spend")
+def get_spend() -> dict:
+    """Lifetime spend monitor: cumulative USD across all runs, plus the per-question budget."""
+    return {
+        "total_spend_usd": round(float(settings.total_spend_usd or 0.0), 6),
+        "total_runs": int(settings.total_runs or 0),
+        "budget_usd": float(settings.budget_usd),
+        "reserve_frac": float(settings.budget_reserve_frac),
+        "model_source": settings.model_source or "foundry",
+        "subagents_enabled": bool(settings.subagents_enabled),
+        "ai_can_spawn_subagents": bool(settings.ai_can_spawn_subagents),
+    }
+
+
+@app.post("/deployments")
+def deployments(req: dict) -> dict:
+    """List a candidate project's deployments for the Connect dropdown — does NOT persist."""
+    endpoint = (req.get("project_endpoint") or "").strip()
+    if not endpoint:
+        return {"ok": False, "error": "A Foundry project endpoint is required."}
+    try:
+        models = _list_deployments(endpoint)
+    except Exception as exc:
+        return {
+            "ok": False,
+            "error": f"{type(exc).__name__}: {exc}",
+            "auth_hint": "If this is a sign-in error, run `az login` in your terminal, then try again.",
+        }
+    chat = [m for m in models if "embed" not in m.lower()]
+    return {"ok": True, "models": models, "chat_models": chat}
 
 
 @app.post("/connect")
@@ -278,6 +315,59 @@ def set_models(req: dict) -> dict:
         _FOUNDRY_HELPER = None
         _HELPER_AGENTS = set()
     return {"ok": True, "roles": {r: getattr(settings, r) for r in roles}}
+
+
+@app.post("/settings")
+def update_settings(req: dict) -> dict:
+    """Update budget / model source / subagent toggles. All fields optional; only sent ones change."""
+    from .config import save_runtime_config
+
+    updates: dict = {}
+
+    if "budget_usd" in req and req["budget_usd"] is not None:
+        try:
+            b = float(req["budget_usd"])
+            if math.isfinite(b) and 0 < b <= 100:
+                settings.budget_usd = b
+                updates["budget_usd"] = b
+        except (TypeError, ValueError):
+            pass
+
+    if "model_source" in req:
+        src = (req.get("model_source") or "").strip().lower()
+        if src in ("foundry", "local"):
+            settings.model_source = src
+            updates["model_source"] = src
+
+    for key in ("subagents_enabled", "ai_can_spawn_subagents"):
+        if key in req:
+            val = bool(req[key])
+            setattr(settings, key, val)
+            updates[key] = val
+
+    # Coherence guard: AI cannot spawn subagents if subagents are disabled entirely.
+    if not settings.subagents_enabled and settings.ai_can_spawn_subagents:
+        settings.ai_can_spawn_subagents = False
+        updates["ai_can_spawn_subagents"] = False
+
+    if req.get("reset_spend") is True:
+        settings.total_spend_usd = 0.0
+        settings.total_runs = 0
+        updates["total_spend_usd"] = 0.0
+        updates["total_runs"] = 0
+
+    if updates:
+        save_runtime_config(updates)
+
+    return {
+        "ok": True,
+        "budget_usd": float(settings.budget_usd),
+        "model_source": settings.model_source,
+        "subagents_enabled": bool(settings.subagents_enabled),
+        "ai_can_spawn_subagents": bool(settings.ai_can_spawn_subagents),
+        "total_spend_usd": round(float(settings.total_spend_usd or 0.0), 6),
+        "total_runs": int(settings.total_runs or 0),
+    }
 
 
 # ===== Marshal Workshop — self-upgrading capabilities. =====
@@ -707,32 +797,42 @@ def plan_next(req: dict) -> dict:
 
 
 PLAN_ALL_SYSTEM = (
-    "You are planning a project on a kanban board. Given the goal (and any steps already added), produce the "
-    "FULL remaining plan as an ordered list of concrete, actionable board cards, each one small and self-contained, "
-    "covering the project end to end. Do not repeat steps already added. "
+    "You are planning a project on a kanban board. Given the goal (and any cards already added), propose "
+    "the most important remaining cards as a batch the user can pick from. Each card is concrete, actionable, "
+    "small and self-contained. Order the batch MOST IMPORTANT FIRST, so the user can add the top few and stop. "
+    "Aim for about 5 cards; never more than 8. Quality and ordering matter more than coverage: do not pad the "
+    "list to hit a number, and do not repeat cards already added. "
+    "If a FOCUS direction is given, treat it as the user's steer: generate new cards that advance that direction "
+    "AND suggest a few cards that naturally support it, still ordered most important first. "
     'Reply with STRICT JSON only: {"steps": [{"title": "short card title", "detail": "one or two sentences of guidance"}]}. '
-    "Between 4 and 10 steps. No prose outside the JSON."
+    "No prose outside the JSON."
 )
 
 
 @app.post("/plan-all")
 def plan_all(req: dict) -> dict:
-    """Produce the whole plan in one shot, so the user can add every step at once."""
+    """An importance-ordered batch of cards in one shot. Optional `focus` steers it."""
     goal = (req.get("goal") or "").strip()
     if not goal:
         return {"steps": []}
     steps = req.get("steps") or []
+    focus = (req.get("focus") or "").strip()[:600]
     project = req.get("project") or {}
     model = req.get("model")
 
     from .loop import _extract_json
 
     added = "\n".join(f"- {s.get('title', '')}" for s in steps) or "(none yet)"
+    focus_block = (
+        f"FOCUS (the user's steer; generate cards that advance this and suggest cards that support it):\n{focus}\n\n"
+        if focus else ""
+    )
     prompt = (
         f"PROJECT: {project.get('name', '')} — {project.get('desc', '')}\n"
         f"GOAL: {goal}\n\n"
-        f"STEPS ALREADY ADDED (do not repeat these):\n{added}\n\n"
-        "Produce the full remaining plan. STRICT JSON ONLY."
+        f"CARDS ALREADY ADDED (do not repeat these):\n{added}\n\n"
+        f"{focus_block}"
+        "Propose the batch, most important first. STRICT JSON ONLY."
     )
     try:
         reply = _helper_reply("marshal-plan-all", PLAN_ALL_SYSTEM, prompt, model)
@@ -742,7 +842,7 @@ def plan_all(req: dict) -> dict:
             for s in (data.get("steps") or [])
             if str(s.get("title", "")).strip()
         ]
-        return {"steps": out[:12]}
+        return {"steps": out[:8]}
     except Exception as exc:
         return {"steps": [], "error": f"{type(exc).__name__}: {exc}"}
 
@@ -756,6 +856,7 @@ def _run(
     knowledge=None,
     source: str | None = None,
 ) -> None:
+    from .config import add_spend
     from .loop import Marshal
 
     grounding = _grounding_for(source, knowledge)
@@ -764,15 +865,23 @@ def _run(
         # Local testing on the Claude *subscription* via the Claude Code CLI (no API key).
         from .cli_provider import ClaudeCliProvider
 
-        Marshal(ClaudeCliProvider(model=model), emit=emit, grounding=grounding).answer(question, budget_usd=budget)
+        result = Marshal(ClaudeCliProvider(model=model), emit=emit, grounding=grounding).answer(question, budget_usd=budget)
     elif mode == "demo" or not settings.project_endpoint:
         from .demo import DemoFoundry
 
-        Marshal(DemoFoundry(), emit=emit, grounding=grounding).answer(question or "Demo question", budget_usd=budget)
+        result = Marshal(DemoFoundry(), emit=emit, grounding=grounding).answer(question or "Demo question", budget_usd=budget)
     else:
         from .foundry import Foundry
 
-        Marshal(Foundry(settings.project_endpoint), emit=emit, grounding=grounding).answer(question, budget_usd=budget)
+        result = Marshal(Foundry(settings.project_endpoint), emit=emit, grounding=grounding).answer(question, budget_usd=budget)
+
+    # Accumulate this run's spend into the persisted lifetime total, then tell the UI.
+    try:
+        spent = float((result or {}).get("budget", {}).get("spent_usd") or 0.0)
+    except (AttributeError, TypeError, ValueError):
+        spent = 0.0
+    totals = add_spend(spent)
+    emit({"type": "spend_total", **totals})
 
 
 @app.websocket("/ws")
