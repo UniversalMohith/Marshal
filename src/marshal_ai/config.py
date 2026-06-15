@@ -151,6 +151,125 @@ def save_runtime_config(data: dict) -> None:
         pass
 
 
+# ===== Master file (the user's profile). Server-owned, append-only, never returned verbatim
+# to the browser. Marshal auto-appends learnings; the user can only download it. =====
+import datetime as _dt  # noqa: E402
+
+_PROFILE_MAX_ENTRIES = 200
+_PROFILE_ENTRY_CHARS = 600
+_PROFILE_PROMPT_CHARS = 6000  # bound on the text injected into a chat prompt
+
+
+def _read_config() -> dict:
+    try:
+        if _CONFIG_PATH.exists():
+            return json.loads(_CONFIG_PATH.read_text(encoding="utf-8"))
+    except Exception:
+        pass
+    return {}
+
+
+def _write_config(data: dict) -> None:
+    try:
+        _CONFIG_PATH.write_text(json.dumps(data, indent=2), encoding="utf-8")
+    except Exception:
+        pass
+
+
+def _norm(s: str) -> str:
+    return " ".join((s or "").split()).lower()
+
+
+def load_profile() -> dict:
+    """Return the raw profile dict: {'entries': [...], 'updated_at': str|None}."""
+    prof = _read_config().get("profile") or {}
+    entries = prof.get("entries") or []
+    if not isinstance(entries, list):
+        entries = []
+    return {"entries": entries, "updated_at": prof.get("updated_at")}
+
+
+def append_profile_entries(items: list[dict]) -> int:
+    """Append learnings to the master file. Each item: {'text': str, 'source': str}.
+
+    De-dupes against recent entries, enforces per-entry and total caps. Returns how many
+    were actually added. Never raises (best-effort persistence, like the rest of the file).
+    """
+    data = _read_config()
+    prof = data.get("profile") or {}
+    entries = prof.get("entries") if isinstance(prof.get("entries"), list) else []
+    recent_norms = {_norm(e.get("text", "")) for e in entries[-50:]}
+
+    added = 0
+    now = _dt.datetime.now(_dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    for it in items or []:
+        text = (it.get("text") or "").strip()[:_PROFILE_ENTRY_CHARS]
+        if not text:
+            continue
+        n = _norm(text)
+        if not n or n in recent_norms:
+            continue
+        entries.append({"ts": now, "source": (it.get("source") or "chat").strip()[:40], "text": text})
+        recent_norms.add(n)
+        added += 1
+
+    if added:
+        if len(entries) > _PROFILE_MAX_ENTRIES:
+            entries = entries[-_PROFILE_MAX_ENTRIES:]  # FIFO trim
+        prof["entries"] = entries
+        prof["updated_at"] = now
+        data["profile"] = prof
+        _write_config(data)
+    return added
+
+
+def profile_prompt_text() -> str:
+    """Newest-first plain text of the master file, bounded for prompt injection."""
+    entries = load_profile()["entries"]
+    out, used = [], 0
+    for e in reversed(entries):  # newest first so the most recent learnings survive the cap
+        line = (e.get("text") or "").strip()
+        if not line:
+            continue
+        if used + len(line) + 1 > _PROFILE_PROMPT_CHARS:
+            break
+        out.append(line)
+        used += len(line) + 1
+    return "\n".join(out)
+
+
+def profile_markdown() -> str:
+    """The downloadable .md rendering of the whole master file (chronological)."""
+    p = load_profile()
+    entries = p["entries"]
+    lines = [
+        "# Marshal master file",
+        "",
+        "What Marshal has learned about how you like to work. This file is maintained "
+        "automatically by Marshal and is not editable in the app.",
+        "",
+        f"- Entries: {len(entries)}",
+        f"- Last updated: {p['updated_at'] or 'never'}",
+        "",
+        "## Learnings",
+        "",
+    ]
+    if not entries:
+        lines.append("_Empty. Marshal has not learned anything yet. Add context in setup or just start chatting._")
+    else:
+        for e in entries:
+            src = e.get("source") or "chat"
+            ts = e.get("ts") or ""
+            lines.append(f"- **[{src}]** {e.get('text', '').strip()}  \n  _{ts}_")
+    return "\n".join(lines) + "\n"
+
+
+def profile_status() -> dict:
+    """Small summary for the Settings status line. Never exposes entry text."""
+    p = load_profile()
+    return {"count": len(p["entries"]), "updated_at": p["updated_at"]}
+
+
 def add_spend(amount_usd: float) -> dict:
     """Accumulate one run's spend into the persisted lifetime total. Returns the new totals.
 

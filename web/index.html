@@ -419,7 +419,7 @@ const store = {
   projects: load('marshal-projects', []),
   pinned: load('marshal-pins', []),
   provider: load('marshal-provider','foundry'),
-  profileNotes: load('marshal-notes',''),
+  profileStat: { count: 0, updated_at: null },   // summary only; the master file lives server-side
   chat: load('marshal-chat', { messages:[], source:'project' }),
   repo: load('marshal-repo',''),
   ghMode: load('marshal-ghmode','token'),     // 'token' | 'public'
@@ -440,6 +440,12 @@ try{
   // Drop the old premade seed projects (and their pins) from any existing localStorage.
   store.projects = (store.projects||[]).filter(p=>p && p.id!=='p1' && p.id!=='p2');
   store.pinned = (store.pinned||[]).filter(x=>x!=='p1' && x!=='p2');
+  // One-time migration: the master file moved server-side. Push any old local notes up, then clear.
+  const oldNotes=load('marshal-notes','');
+  if(oldNotes && (''+oldNotes).trim()){
+    fetch('/profile/append',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({text:(''+oldNotes).slice(0,4000), source:'migrated'})})
+      .then(()=>{ try{ localStorage.removeItem('marshal-notes'); }catch(e){} }).catch(()=>{});
+  } else { try{ localStorage.removeItem('marshal-notes'); }catch(e){} }
 }catch(e){}
 persist();
 
@@ -1023,6 +1029,18 @@ function iqStatusHTML(){
   if(iqConfigured()) return `<span style="color:var(--done)">configured · ${esc(iqKB())}</span>`;
   return '<span style="color:var(--review)">not set · grounding falls back to project notes</span>';
 }
+// ===== Master file (server-owned, hidden, download-only) — only a summary reaches the browser =====
+async function loadProfileStat(force){
+  try{ const r=await fetch('/profile/status'); const d=await r.json(); store.profileStat={count:d.count||0, updated_at:d.updated_at||null}; }
+  catch(e){}
+}
+function profileStatHTML(){
+  const s = store.profileStat || {};
+  if(!s.count) return '<span class="muted">empty · Marshal will fill this in as you go</span>';
+  const when = s.updated_at ? new Date(s.updated_at).toLocaleDateString() : '';
+  return `<span style="color:var(--done)">${s.count} learning${s.count===1?'':'s'}</span>${when?` <span class="muted">· updated ${esc(when)}</span>`:''}`;
+}
+function openWizardToContext(){ openWizard(); wizStep=4; renderWizard(); }   // jump straight to the paste step (now step 4)
 function foundryStatusHTML(){
   if(!fcfg) return '<span class="muted">checking…</span>';
   if(fcfg.error) return '<span style="color:#e0607e">backend unreachable</span>';
@@ -1366,19 +1384,17 @@ function settingsHTML(){
     ${budgetPanelHTML()}
     ${modelSourcePanelHTML()}
     ${subagentsPanelHTML()}
-    <div class="panel"><h2>Marshal learns you</h2><p class="h">Marshal keeps a master file of how you like to work and adapts to it. It fills in as you go, and you can edit it directly.</p>
-      <div class="row"><div class="muted">Learned so far</div><div style="text-align:right;font-size:13px">theme <strong>${esc(store.theme)}</strong> · Microsoft Foundry${activeFoundryModel()?' · '+esc(activeFoundryModel()):''}</div></div>
-      <div style="padding:12px 0"><label for="s-notes">Master file: what Marshal remembers about you</label>
-        <textarea id="s-notes" maxlength="8000" style="width:100%;min-height:96px;margin-top:6px" placeholder="e.g. I prefer concise answers, monoliths over microservices, and British spelling. Marshal will also add what it learns here.">${esc(store.profileNotes)}</textarea><div class="muted" style="font-size:11px;margin-top:4px">Up to 8000 characters. The most recent 6000 are sent with each chat.</div></div>
-      <div class="row" style="border-top:0;justify-content:flex-end;padding-top:0;gap:8px"><button class="btn sm ghost" id="s-notes-md">Download .md</button><button class="btn sm" id="s-notes-save">Save master file</button></div></div>
+    <div class="panel"><h2>Marshal learns you</h2><p class="h">Marshal keeps a private master file of how you like to work and updates it automatically from your chats and setup. For your privacy it can't be viewed or edited in the app, only downloaded.</p>
+      <div class="row"><div class="muted">Master file</div><div style="text-align:right;font-size:13px" id="s-prof-stat">${profileStatHTML()}</div></div>
+      <div class="row" style="border-top:0;padding-top:0"><div class="muted" style="max-width:62%">Add context any time from setup, or just keep chatting. Marshal appends what it learns.</div><div style="display:flex;gap:8px"><button class="btn sm ghost" id="s-prof-ctx">Add context</button><button class="btn sm" id="s-prof-dl">Download .md</button></div></div></div>
     <div class="panel"><h2>Setup</h2><p class="h">Re-run the welcome, link a repo, or bring in more context from your AIs.</p>
       <div class="row" style="border-top:0;padding-top:0"><div class="muted">First-run setup</div><button class="btn sm ghost" id="s-setup">Run setup again</button></div></div>
     </div>`;
 }
 function wireSettings(){
   $('s-theme').onchange=e=>applyTheme(e.target.value);
-  const ns=$('s-notes-save'); if(ns) ns.onclick=()=>{ store.profileNotes=($('s-notes').value||'').slice(0,8000); save('marshal-notes',store.profileNotes); ns.textContent='Saved'; setTimeout(()=>{ns.textContent='Save master file';},1200); };
-  const md=$('s-notes-md'); if(md) md.onclick=()=>{ store.profileNotes=$('s-notes').value; save('marshal-notes',store.profileNotes); downloadMasterFile(); };
+  const dl=$('s-prof-dl'); if(dl) dl.onclick=()=>downloadMasterFile();
+  const ctx=$('s-prof-ctx'); if(ctx) ctx.onclick=()=>openWizardToContext();
   const su=$('s-setup'); if(su) su.onclick=()=>openWizard();
   const sc=$('s-connect'); if(sc) sc.onclick=()=>connectFoundry();
   const iqc=$('s-iq-connect'); if(iqc) iqc.onclick=()=>connectFoundryIQDialog();
@@ -1444,15 +1460,18 @@ function wireSettings(){
     subSave.textContent='Save subagent settings'; subSave.disabled=false;
   };
 }
-function downloadMasterFile(){
-  const body = (store.profileNotes||'').trim() || '(empty, Marshal has not learned anything yet)';
-  const md = `# Marshal master file\n\nWhat Marshal remembers about how I like to work.\n\n- Theme: ${store.theme}\n- Model: Microsoft Foundry${activeFoundryModel()?' / '+activeFoundryModel():''}\n\n## Notes\n\n${body}\n`;
-  const a = document.createElement('a');
-  a.href = URL.createObjectURL(new Blob([md], {type:'text/markdown'}));
-  a.download = 'marshal-master-file.md';
-  document.body.appendChild(a); a.click();
-  setTimeout(()=>{ URL.revokeObjectURL(a.href); a.remove(); }, 0);
-  toast('Master file downloaded.');
+async function downloadMasterFile(){
+  try{
+    const r = await fetch('/profile/download');
+    if(!r.ok) throw new Error('HTTP '+r.status);
+    const md = await r.text();
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(new Blob([md], {type:'text/markdown'}));
+    a.download = 'marshal-master-file.md';
+    document.body.appendChild(a); a.click();
+    setTimeout(()=>{ URL.revokeObjectURL(a.href); a.remove(); }, 0);
+    toast('Master file downloaded.');
+  }catch(e){ toast('Could not download the master file. Is the server running?'); }
 }
 
 // (Teams feature removed — Marshal is a fully-local, single-user assistant.)
@@ -1552,7 +1571,7 @@ async function sendChat(){
   let reply, citations=[], groundLabel='';
   try{
     const names=chatModels().map(d=>d.name); const model=(store.chat.model && names.includes(store.chat.model)) ? store.chat.model : '';
-    const res=await fetch('/chat',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({message:text, history, source, knowledge, model, profile:(store.profileNotes||'').slice(0,6000)})});
+    const res=await fetch('/chat',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({message:text, history, source, knowledge, model})});
     const data=await res.json();
     reply = deEm(data.reply || data.error || '(no reply)');
     citations = data.citations || []; groundLabel = data.groundLabel || '';
@@ -1934,7 +1953,18 @@ function renderWizard(){
   const prs=$('wiz-pubrepo-save'); if(prs) prs.onclick=()=>{ const v=normSlug($('wiz-pubrepo').value); if(!/^[\w.-]+\/[\w.-]+$/.test(v)){ toast('Enter the repo as owner/repo.'); return; } store.ghPublicRepo=v; save('marshal-pubrepo',v); ghPubTree=null; toast('Public repo set: '+v); };
   const wsa=$('wiz-sa'); if(wsa) wsa.onchange=()=>{ const ai=$('wiz-sa-ai'); if(ai){ ai.disabled=!wsa.checked; if(!wsa.checked) ai.checked=false; } };
   const cp=$('wiz-copy'); if(cp) cp.onclick=()=>{ try{ navigator.clipboard.writeText(WIZ_PROMPT); }catch(e){} cp.textContent='Copied'; setTimeout(()=>{cp.textContent='Copy';},1200); };
-  const add=$('wiz-add'); if(add) add.onclick=()=>{ const src=$('wiz-src').value, txt=$('wiz-ctx').value.trim(); if(!txt){ toast("Paste your AI's reply first."); return; } store.profileNotes=((store.profileNotes?store.profileNotes.trim()+'\n\n':'')+'## From '+src+'\n'+txt).slice(0,8000); save('marshal-notes',store.profileNotes); if(!wizSources.includes(src)) wizSources.push(src); renderWizard(); toast('Added context from '+src+'.'); };
+  const add=$('wiz-add'); if(add) add.onclick=async()=>{
+    const src=$('wiz-src').value, txt=$('wiz-ctx').value.trim();
+    if(!txt){ toast("Paste your AI's reply first."); return; }
+    add.disabled=true;
+    try{
+      const r=await fetch('/profile/append',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({text:txt, source:'setup:'+src})});
+      const d=await r.json();
+      if(d && d.ok){ store.profileStat={count:d.count, updated_at:d.updated_at}; if(!wizSources.includes(src)) wizSources.push(src); $('wiz-ctx').value=''; renderWizard(); toast(d.added?('Added context from '+src+'.'):('Already had that from '+src+'.')); }
+      else { toast('Could not save that context.'); }
+    }catch(e){ toast('Backend unreachable.'); }
+    add.disabled=false;
+  };
   const wc=$('wiz-connect'); if(wc) wc.onclick=async()=>{ const ep=($('wiz-ep').value||'').trim(); if(!ep){ toast('Paste your project endpoint.'); return; } const ss=$('wiz-fstatus'); if(ss) ss.textContent='connecting…'; wc.disabled=true; try{ const r=await fetch('/connect',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({project_endpoint:ep})}); const d=await r.json(); if(d.ok){ fcfg=null; modelData=null; await loadFoundryConfig(true); toast('Foundry connected. '+((d.models||[]).length)+' model(s).'); renderWizard(); } else { if(ss) ss.textContent=(d.error||'failed'); wc.disabled=false; } }catch(e){ if(ss) ss.textContent='backend unreachable'; wc.disabled=false; } };
   const pg=$('wiz-pat-go'); if(pg) pg.onclick=async()=>{ const tok=($('wiz-pat').value||'').trim(); if(!tok){ toast('Paste a token.'); return; } const ss=$('wiz-ghstatus'); if(ss) ss.textContent='connecting…'; pg.disabled=true; try{ const r=await fetch('/github/connect',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({token:tok})}); const d=await r.json(); if(d.ok){ ghState=null; await loadGithubStatus(true); toast('GitHub connected as '+(d.login||'')); renderWizard(); } else { if(ss) ss.textContent=(d.error||'failed'); pg.disabled=false; } }catch(e){ if(ss) ss.textContent='backend unreachable'; pg.disabled=false; } };
   keepFocusIn($('wizard'));
@@ -2075,6 +2105,8 @@ render();
 loadConfig().then(()=>{ if(store.view==='chat') render(); });
 // Load Foundry config so the Subagents rail tab can appear on first paint when enabled.
 loadFoundryConfig().then(()=>{ applySubagentVisibility(); if(store.view==='subagents'||store.view==='settings') render(); });
+// Master file summary (count only; the file itself stays server-side).
+loadProfileStat().then(()=>{ if(store.view==='settings') render(); });
 // Load real model data so the board can stamp cards with the model actually in use.
 loadModels().then(()=>{ if(store.view==='models') render(); });
 loadGithubStatus();   // so a connected GitHub repo enables "Push to GitHub" on cards

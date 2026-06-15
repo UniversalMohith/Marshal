@@ -529,6 +529,48 @@ def update_settings(req: dict) -> dict:
     }
 
 
+# ===== Master file (profile) — server-owned, hidden from the UI, download-only. =====
+# The browser can read a status summary and download the .md, but never the raw text.
+from fastapi.responses import PlainTextResponse  # noqa: E402
+
+
+@app.get("/profile/status")
+def profile_status_endpoint() -> dict:
+    """Counts and last-updated only. No entry text crosses the wire here."""
+    from .config import profile_status
+
+    return profile_status()
+
+
+@app.get("/profile/download")
+def profile_download():
+    """The only way to see the master file: download it as Markdown."""
+    from .config import profile_markdown
+
+    return PlainTextResponse(
+        profile_markdown(),
+        media_type="text/markdown; charset=utf-8",
+        headers={"Content-Disposition": 'attachment; filename="marshal-master-file.md"'},
+    )
+
+
+@app.post("/profile/append")
+def profile_append(req: dict) -> dict:
+    """Append user-supplied context to the master file (e.g. the wizard paste step).
+
+    Body: {"text": "...", "source": "setup:ChatGPT"}  OR
+          {"items": [{"text": "...", "source": "..."}, ...]}.
+    Returns only the new status summary, never the stored text.
+    """
+    from .config import append_profile_entries, profile_status
+
+    items = req.get("items")
+    if not isinstance(items, list):
+        items = [{"text": req.get("text") or "", "source": req.get("source") or "setup"}]
+    added = append_profile_entries(items)
+    return {"ok": True, "added": added, **profile_status()}
+
+
 # ===== Marshal Workshop — self-upgrading capabilities. =====
 # A capability is a specialised agent Marshal designs for itself from a plain-language
 # description: a charter (system prompt) it can then run on demand. Stored in .marshal.json
@@ -940,6 +982,18 @@ CHAT_SYSTEM = (
     "is genuinely ambiguous, ask one clarifying question rather than guessing."
 )
 
+LEARN_SYSTEM = (
+    "You maintain a long-term memory of durable facts and standing preferences about ONE user, "
+    "for an assistant called Marshal. Read the latest exchange and extract only information worth "
+    "remembering for future conversations: stable preferences (tone, format, spelling), the user's "
+    "role and domains, ongoing projects, tools and stacks, and any explicit instruction to remember "
+    "something. Ignore one-off task details, transient context, anything ephemeral, and anything the "
+    "user did not actually state about themselves. Reply with STRICT JSON only, no prose: "
+    '{"learnings": ["short third-person statement", ...]}. '
+    "Between 0 and 3 items. Each under 200 characters. British English. If nothing is worth "
+    'remembering, return {"learnings": []}.'
+)
+
 
 # Lightweight endpoints (chat, suggestions, drafts, planner) run on Microsoft Foundry
 # when it is configured (the primary backend, using your deployment); they fall back to
@@ -1030,13 +1084,16 @@ def chat(req: dict) -> dict:
     model = req.get("model")
     source = req.get("source")
     knowledge = req.get("knowledge")
-    profile = (req.get("profile") or "").strip()[:6000]  # bound prompt growth from the master file
+
+    # The master file is server-owned now: the browser never holds it. Inject it here so it rides
+    # in the prompt (preferred name, tone, ongoing context) without ever being returned to the UI.
+    from .config import profile_prompt_text
+
+    profile = profile_prompt_text()
 
     grounding = _grounding_for(source, knowledge)
     ground_block, citations = _retrieve_citations(grounding, message)
 
-    # The master file is per-request context (the helper agent caches its system prompt), so it
-    # rides in the prompt. It is how the user states a preferred name or form of address, etc.
     profile_block = (
         "USER MASTER FILE (the user's stated preferences and context; honour any preferred name "
         f"or form of address stated here):\n{profile}\n\n---\n\n"
@@ -1052,6 +1109,8 @@ def chat(req: dict) -> dict:
 
     try:
         reply = _helper_reply("marshal-chat", CHAT_SYSTEM, profile_block + ground_block + "\n".join(lines), model)
+        # Auto-update the master file from this exchange, off the request path so the reply is not slowed.
+        threading.Thread(target=_learn_from_chat, args=(message, reply.text, model), daemon=True).start()
         return {
             "reply": reply.text,
             "input_tokens": reply.input_tokens,
@@ -1061,6 +1120,34 @@ def chat(req: dict) -> dict:
         }
     except Exception as exc:
         return {"reply": "", "error": f"{type(exc).__name__}: {exc}"}
+
+
+def _learn_from_chat(message: str, reply_text: str, model: str | None) -> None:
+    """Best-effort: extract durable learnings from one exchange and append to the master file.
+
+    Runs in a daemon thread after the reply is built. Never raises into the request path.
+    """
+    from .config import append_profile_entries
+    from .loop import _extract_json
+
+    try:
+        prompt = (
+            "LATEST EXCHANGE:\n"
+            f"User: {message}\n"
+            f"Marshal: {reply_text}\n\n"
+            "Extract durable learnings. STRICT JSON ONLY."
+        )
+        out = _helper_reply("marshal-learn", LEARN_SYSTEM, prompt, model)
+        data = _extract_json(out.text) or {}
+        items = [
+            {"text": str(s).strip(), "source": "chat"}
+            for s in (data.get("learnings") or [])
+            if str(s).strip()
+        ]
+        if items:
+            append_profile_entries(items[:3])
+    except Exception:
+        pass  # learning is best-effort; it must never break chat
 
 
 FILES_SYSTEM = (
