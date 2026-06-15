@@ -4,6 +4,9 @@
 *.key
 .azure/
 
+# Locally-served preview sites (Marshal "Open on localhost")
+.marshal_runs/
+
 # Python
 __pycache__/
 *.py[cod]

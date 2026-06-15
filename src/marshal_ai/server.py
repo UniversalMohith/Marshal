@@ -11,12 +11,16 @@ from __future__ import annotations
 
 import asyncio
 import math
+import mimetypes
+import re
+import secrets
+import shutil
 import threading
 import time
 from pathlib import Path
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, Response
 
 from .config import settings
 
@@ -37,6 +41,85 @@ def health() -> dict:
         "endpoint_configured": bool(settings.project_endpoint),
         "foundry_iq_configured": bool(settings.search_endpoint and settings.knowledge_base),
     }
+
+
+# ===== Run on localhost — serve a built site's files statically at a real local URL. =====
+# Writes the given files to a temp dir (gitignored) and serves them at /run/<id>/. STATIC ONLY:
+# files are served as-is, never executed, so a backend file (server.js, routes/web.php) is served as
+# text, not run. This covers static sites and single-page apps; it does not run arbitrary server code.
+_RUNS_DIR = Path(__file__).resolve().parents[2] / ".marshal_runs"
+
+
+def _safe_join(base: Path, rel: str):
+    """Join rel onto base, returning None if it escapes base (path-traversal guard)."""
+    try:
+        p = (base / rel).resolve()
+        p.relative_to(base.resolve())
+        return p
+    except (ValueError, OSError):
+        return None
+
+
+def _prune_runs(keep: int = 24) -> None:
+    """Keep only the most recent run dirs so served sites don't grow without bound."""
+    try:
+        if not _RUNS_DIR.is_dir():
+            return
+        dirs = sorted((d for d in _RUNS_DIR.iterdir() if d.is_dir()), key=lambda d: d.stat().st_mtime, reverse=True)
+        for d in dirs[keep:]:
+            shutil.rmtree(d, ignore_errors=True)
+    except Exception:
+        pass
+
+
+@app.post("/serve")
+def serve_site(req: dict) -> dict:
+    """Write a set of files to a temp dir and serve them at /run/<id>/. Static only, no code execution."""
+    raw = req.get("files") or []
+    clean: list[tuple[str, str]] = []
+    for f in raw:
+        path = str((f or {}).get("path") or "").strip().lstrip("/")
+        if not path or any(seg in ("..", "") for seg in path.split("/")):
+            continue
+        clean.append((path, (f.get("content") or "")))
+    if not clean:
+        return {"ok": False, "error": "No files with content to serve. Draft or paste some code first."}
+    run_id = secrets.token_hex(6)
+    run_dir = _RUNS_DIR / run_id
+    try:
+        run_dir.mkdir(parents=True, exist_ok=True)
+        for path, content in clean:
+            dest = _safe_join(run_dir, path)
+            if dest is None:
+                continue
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            dest.write_text(content, encoding="utf-8")
+    except Exception as exc:
+        return {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
+    paths = [p for p, _ in clean]
+    entry = "index.html" if "index.html" in paths else next(
+        (p for p in paths if p.lower().endswith((".html", ".htm"))), paths[0]
+    )
+    _prune_runs()
+    return {"ok": True, "url": f"/run/{run_id}/{entry}", "run": run_id, "entry": entry, "count": len(clean)}
+
+
+@app.get("/run/{run_id}/{file_path:path}")
+def serve_run_file(run_id: str, file_path: str):
+    """Serve a previously written file for a run. 404 on unknown run, bad id, or path traversal."""
+    if not re.fullmatch(r"[0-9a-f]{6,16}", run_id or ""):
+        return Response("Not found", status_code=404)
+    base = _RUNS_DIR / run_id
+    rel = file_path or "index.html"
+    dest = _safe_join(base, rel)
+    if dest is None or not dest.is_file():
+        idx = _safe_join(base, (rel.rstrip("/") + "/index.html").lstrip("/")) if rel else _safe_join(base, "index.html")
+        if idx is not None and idx.is_file():
+            dest = idx
+        else:
+            return Response("Not found", status_code=404)
+    ctype = mimetypes.guess_type(str(dest))[0] or "application/octet-stream"
+    return FileResponse(str(dest), media_type=ctype)
 
 
 def _list_deployments(endpoint: str):

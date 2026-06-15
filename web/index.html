@@ -495,7 +495,7 @@ function render(){
   const v=$('view'), title=$('title'), actions=$('actions'); actions.innerHTML='';
   if(store.view==='dashboard'){ title.innerHTML='Dashboard'; v.innerHTML=dashboardHTML(); wireDashboard(); }
   else if(store.view==='projects'){ title.innerHTML='Projects'; actions.innerHTML=`<button class="btn sm" id="newP">${I.plus} New project</button>`; v.innerHTML=projectsHTML(); wireProjects(); $('newP').onclick=newProject; }
-  else if(store.view==='kanban'){ const p=project(store.current); title.innerHTML=`<span class="crumb">Projects / </span>${p?esc(p.name):''} <span class="crumb">/ Board</span>`; if(p) actions.innerHTML=`<div style="display:flex;gap:8px">${(runMeta.projectId===p.id && (runTrace.length||agentsRunning))?`<button class="btn sm ghost" id="traceBtn">Reasoning trace</button>`:''}<button class="btn sm ghost" id="planBtn">Plan step by step</button><button class="btn sm" id="runAgents" ${agentsRunning?'disabled':''}>${agentsRunning?('Marshal working… $'+(agentsSpend||0).toFixed(2)):'Run Marshal'}</button></div>`; const _bs=boardScroll(); v.innerHTML=p?kanbanHTML(p):'<p class="muted">Project not found.</p>'; boardScroll(_bs); if(p){ wireKanban(p); const rb=$('runAgents'); if(rb) rb.onclick=()=>runAgents(p); const pb=$('planBtn'); if(pb) pb.onclick=()=>openPlan(p); const tb=$('traceBtn'); if(tb) tb.onclick=()=>openTrace(); } }
+  else if(store.view==='kanban'){ const p=project(store.current); title.innerHTML=`<span class="crumb">Projects / </span>${p?esc(p.name):''} <span class="crumb">/ Board</span>`; if(p) actions.innerHTML=`<div style="display:flex;gap:8px">${(runMeta.projectId===p.id && (runTrace.length||agentsRunning))?`<button class="btn sm ghost" id="traceBtn">Reasoning trace</button>`:''}${projectFiles(p).length?`<button class="btn sm ghost" id="openSite" title="Serve every file in this project at a real localhost URL">${I.open} Open site</button>`:''}<button class="btn sm ghost" id="planBtn">Plan step by step</button><button class="btn sm" id="runAgents" ${agentsRunning?'disabled':''}>${agentsRunning?('Marshal working… $'+(agentsSpend||0).toFixed(2)):'Run Marshal'}</button></div>`; const _bs=boardScroll(); v.innerHTML=p?kanbanHTML(p):'<p class="muted">Project not found.</p>'; boardScroll(_bs); if(p){ wireKanban(p); const rb=$('runAgents'); if(rb) rb.onclick=()=>runAgents(p); const pb=$('planBtn'); if(pb) pb.onclick=()=>openPlan(p); const tb=$('traceBtn'); if(tb) tb.onclick=()=>openTrace(); const os=$('openSite'); if(os) os.onclick=()=>openOnLocalhost(projectFiles(p), p.name); } }
   else if(store.view==='chat'){ title.innerHTML='Chat'; v.innerHTML=chatHTML(); wireChat(); if(!modelData) loadModels().then(()=>{ if(store.view==='chat') render(); }); }
   else if(store.view==='models'){ title.innerHTML='Models'; v.innerHTML=modelsHTML(); wireModels(); if(!modelData) loadModels().then(()=>{ if(store.view==='models') render(); }); }
   else if(store.view==='github'){ title.innerHTML='GitHub'; v.innerHTML=githubHTML(); wireGithub(); }
@@ -934,7 +934,7 @@ function openFile(p,t,i){
   const f=(t.files||[])[i]; if(!f) return;
   $('modal').className='modal wide';
   const canPreview = /\.(html?|svg)$/i.test(f.path) || /^\s*<(!doctype|html|svg)/i.test(f.content||'');
-  $('modal').innerHTML=`<h3 style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">${I.file}<span style="font-family:ui-monospace,Menlo,Consolas,monospace;font-size:14px">${esc(f.path)}</span><span class="pill">${esc(langOf(f.path))}</span><span style="margin-left:auto;display:flex;gap:8px">${canPreview?`<button type="button" class="btn ghost sm" id="c-preview">${I.play} Preview</button>`:''}<button type="button" class="btn ghost sm ai-suggest" id="c-ai">${I.spark} Draft with AI</button></span></h3>
+  $('modal').innerHTML=`<h3 style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">${I.file}<span style="font-family:ui-monospace,Menlo,Consolas,monospace;font-size:14px">${esc(f.path)}</span><span class="pill">${esc(langOf(f.path))}</span><span style="margin-left:auto;display:flex;gap:8px">${canPreview?`<button type="button" class="btn ghost sm" id="c-preview">${I.play} Preview</button><button type="button" class="btn ghost sm" id="c-open" title="Serve this file at a real localhost URL and open it in a new tab">${I.open} Open on localhost</button>`:''}<button type="button" class="btn ghost sm ai-suggest" id="c-ai">${I.spark} Draft with AI</button></span></h3>
     <div style="position:relative">
       <textarea id="c-code" class="code-edit" spellcheck="false" placeholder="// ${esc(f.path)} : write or paste code here">${esc(f.content||'')}</textarea>
       <div id="c-drafting" class="drafting-ov" style="display:none">
@@ -954,6 +954,7 @@ function openFile(p,t,i){
   const openPreview=()=>{ const code=$('c-code').value; if(!(code||'').trim()){ toast('Nothing to preview yet. Draft or paste some code first.'); return; } previewHTML(code, ()=>{ openFile(p,t,i); const ta2=$('c-code'); if(ta2) ta2.value=code; }); };
   const pv1=$('c-preview'); if(pv1) pv1.onclick=openPreview;
   const pv2=$('c-preview2'); if(pv2) pv2.onclick=openPreview;
+  const co=$('c-open'); if(co) co.onclick=()=>{ const code=$('c-code').value; if(!(code||'').trim()){ toast('Nothing to serve yet. Draft or paste some code first.'); return; } openOnLocalhost([{path:(f.path||'index.html'), content:code}], f.path.split('/').pop()); };
   $('c-save').onclick=()=>{ f.content=$('c-code').value; persist(); toast('Saved '+f.path.split('/').pop()+'.'); openCard(p,t); };
   $('c-ai').onclick=async()=>{
     const btn=$('c-ai'); const old=btn.innerHTML; btn.disabled=true; btn.innerHTML=`${I.spark} Drafting…`;
@@ -981,6 +982,25 @@ function previewHTML(code, onClose){
   const fr=$('pv-frame'); if(fr) fr.srcdoc=code;
   const rl=$('pv-reload'); if(rl) rl.onclick=()=>{ if(fr) fr.srcdoc=code; };
   $('pv-close').onclick=()=> onClose ? onClose() : closeModal();
+}
+// Gather every file with content across a project's cards, deduped by path (last write wins).
+function projectFiles(p){
+  const byPath={};
+  (p.tasks||[]).forEach(t=> (t.files||[]).forEach(f=>{ if(f.path && f.content!=null && (''+f.content).trim()!=='') byPath[f.path]={path:f.path, content:f.content}; }));
+  return Object.values(byPath);
+}
+// Write files to a temp dir on the server and open the running site at a real localhost URL (static).
+async function openOnLocalhost(files, label){
+  if(!files || !files.length){ toast('No files with content yet. Draft some code first.'); return; }
+  toast('Serving '+(label||'site')+' on localhost…');
+  try{
+    const r=await fetch('/serve',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({files})});
+    const d=await r.json();
+    if(!d.ok){ toast(d.error||'Could not serve that.'); return; }
+    const full=location.origin+d.url;
+    window.open(full,'_blank','noopener');
+    toast((label||'Site')+' running at '+full);
+  }catch(e){ toast('Backend unreachable.'); }
 }
 function aiSuggestNotes(t,p){
   const title=(t.title||'this task'), tl=title.toLowerCase(); let kind='Implement';
