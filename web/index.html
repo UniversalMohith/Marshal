@@ -173,7 +173,7 @@
   .fileitem .fdel{width:24px;height:24px;border:0;}
   .fileitem .fopen{flex:1;min-width:0;text-align:left;background:transparent;border:0;color:var(--ink);cursor:pointer;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:12.5px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;padding:0;}
   .fileitem .fopen:hover{color:var(--accent);text-decoration:underline;}
-  .code-edit{width:100%;min-height:52vh;resize:vertical;background:var(--surface2);color:var(--ink);border:1px solid var(--line);border-radius:10px;padding:13px;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:13px;line-height:1.55;tab-size:2;}
+  .code-edit{display:block;width:100%;min-height:52vh;resize:vertical;background:var(--surface2);color:var(--ink);border:1px solid var(--line);border-radius:10px;padding:13px;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:13px;line-height:1.55;tab-size:2;}
 
   /* ===== Settings ===== */
   .panel{background:var(--surface);border:1px solid var(--line);border-radius:14px;padding:20px;margin-bottom:16px;max-width:640px;}
@@ -253,6 +253,17 @@
   .modal.wide{width:min(900px,95vw);}
   .modal.huge{width:min(1240px,96vw);}
   .modal h3>svg{width:18px;height:18px;flex:0 0 auto;}
+  .drafting-ov{position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:10px;background:color-mix(in srgb,var(--elevated) 90%,transparent);backdrop-filter:blur(2px);border-radius:12px;text-align:center;padding:20px;}
+  .drafting-ov .drafting-spark{color:var(--accent);animation:dpulse 1.4s ease-in-out infinite;}
+  .drafting-ov .drafting-spark svg{width:34px;height:34px;}
+  .drafting-title{font-size:15px;font-weight:600;color:var(--ink);}
+  .drafting-title code{font-family:ui-monospace,Menlo,Consolas,monospace;font-size:13px;color:var(--accent);}
+  .drafting-sub{font-size:12px;color:var(--muted);max-width:360px;line-height:1.5;}
+  .drafting-bar{width:240px;height:4px;border-radius:3px;background:var(--line);overflow:hidden;position:relative;}
+  .drafting-bar span{position:absolute;top:0;height:100%;width:40%;border-radius:3px;background:linear-gradient(90deg,transparent,var(--accent),transparent);animation:dbar 1.3s ease-in-out infinite;}
+  .drafting-time{font-family:ui-monospace,Menlo,Consolas,monospace;font-size:12px;color:var(--muted);}
+  @keyframes dpulse{0%,100%{transform:scale(1);opacity:.85}50%{transform:scale(1.14);opacity:1}}
+  @keyframes dbar{0%{left:-40%}100%{left:100%}}
   .modal h3{margin:0 0 14px;}
   .field{margin-bottom:13px;}
   .field label{display:block;font-size:12px;text-transform:uppercase;letter-spacing:.5px;color:var(--muted);margin-bottom:6px;}
@@ -924,7 +935,16 @@ function openFile(p,t,i){
   $('modal').className='modal wide';
   const canPreview = /\.(html?|svg)$/i.test(f.path) || /^\s*<(!doctype|html|svg)/i.test(f.content||'');
   $('modal').innerHTML=`<h3 style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">${I.file}<span style="font-family:ui-monospace,Menlo,Consolas,monospace;font-size:14px">${esc(f.path)}</span><span class="pill">${esc(langOf(f.path))}</span><span style="margin-left:auto;display:flex;gap:8px">${canPreview?`<button type="button" class="btn ghost sm" id="c-preview">${I.play} Preview</button>`:''}<button type="button" class="btn ghost sm ai-suggest" id="c-ai">${I.spark} Draft with AI</button></span></h3>
-    <textarea id="c-code" class="code-edit" spellcheck="false" placeholder="// ${esc(f.path)} : write or paste code here">${esc(f.content||'')}</textarea>
+    <div style="position:relative">
+      <textarea id="c-code" class="code-edit" spellcheck="false" placeholder="// ${esc(f.path)} : write or paste code here">${esc(f.content||'')}</textarea>
+      <div id="c-drafting" class="drafting-ov" style="display:none">
+        <div class="drafting-spark">${I.spark}</div>
+        <div class="drafting-title">Marshal is drafting <code>${esc(f.path.split('/').pop())}</code></div>
+        <div class="drafting-sub">Writing a complete, self-contained app — inline CSS and JS, no external dependencies. Usually 30 to 60 seconds.</div>
+        <div class="drafting-bar"><span></span></div>
+        <div class="drafting-time" id="c-draft-time">0:00</div>
+      </div>
+    </div>
     <p class="muted" style="font-size:12px;margin:8px 2px 0">Scratch / AI-draft surface. ${canPreview?'Hit Preview to run it live, in a sandbox, inside Marshal.':'For real edits to repo code, open it in GitHub’s editor.'}</p>
     <div class="modal-foot">${repoLinks()?`<a class="btn ghost sm" href="${repoLinks().dev}" target="_blank" rel="noopener" style="margin-right:auto">${I.github} Edit in github.dev</a>`:''}<button class="btn ghost sm" id="c-back">Back to card</button>${canPreview?`<button class="btn ghost sm" id="c-preview2">${I.play} Preview</button>`:''}<button class="btn sm" id="c-save">Save code</button></div>`;
   const _wo=$('scrim').classList.contains('open'); $('scrim').classList.add('open'); afterModalOpen(_wo);
@@ -937,6 +957,9 @@ function openFile(p,t,i){
   $('c-save').onclick=()=>{ f.content=$('c-code').value; persist(); toast('Saved '+f.path.split('/').pop()+'.'); openCard(p,t); };
   $('c-ai').onclick=async()=>{
     const btn=$('c-ai'); const old=btn.innerHTML; btn.disabled=true; btn.innerHTML=`${I.spark} Drafting…`;
+    const ov=$('c-drafting'), tEl=$('c-draft-time'); let secs=0, timer=null;
+    if(ov){ ov.style.display='flex'; if(tEl) tEl.textContent='0:00'; timer=setInterval(()=>{ secs++; const m=Math.floor(secs/60),s=secs%60; if(tEl) tEl.textContent=m+':'+(s<10?'0':'')+s; },1000); }
+    const stop=()=>{ if(timer) clearInterval(timer); const o=$('c-drafting'); if(o) o.style.display='none'; };
     try{
       const res=await fetch('/draft-code',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({path:f.path, task:{title:t.title,notes:t.notes}, project:{name:p.name,desc:p.desc}, existing:$('c-code').value})});
       const data=await res.json();
@@ -944,6 +967,7 @@ function openFile(p,t,i){
       else if(!data.code) toast('No code returned.');
       else { $('c-code').value=data.code; toast('Marshal drafted '+f.path.split('/').pop()+'. Review and save.'); }
     }catch(e){ toast('Could not reach the code drafter.'); }
+    stop();
     btn.disabled=false; btn.innerHTML=old;
   };
 }
