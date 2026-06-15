@@ -1506,7 +1506,7 @@ function wireSettings(){
     const body={}; document.querySelectorAll('[data-role]').forEach(s=> body[s.dataset.role]=s.value);
     rsave.textContent='Saving…'; rsave.disabled=true;
     try{ const r=await fetch('/set-models',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)}); const d=await r.json();
-      if(d.ok){ fcfg=null; await loadFoundryConfig(true); toast('Role models saved.'); render(); }
+      if(d.ok){ fcfg=null; modelData=null; await loadFoundryConfig(true); await loadModels(true); toast('Role models saved.'); render(); }
       else { toast('Could not save role models.'); rsave.textContent='Save role models'; rsave.disabled=false; } }
     catch(e){ toast('Backend unreachable.'); rsave.textContent='Save role models'; rsave.disabled=false; }
   };
