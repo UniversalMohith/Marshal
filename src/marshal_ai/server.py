@@ -20,7 +20,7 @@ import time
 from pathlib import Path
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
-from fastapi.responses import FileResponse, Response
+from fastapi.responses import FileResponse, JSONResponse, Response
 
 from .config import settings
 
@@ -1279,7 +1279,20 @@ def suggest_files(req: dict) -> dict:
 
 CODE_SYSTEM = (
     "You are a senior engineer. Write or update the single file at the given path to accomplish the task. "
-    "Output ONLY the file's complete contents — no explanations, no commentary, and no markdown code fences."
+    "Output ONLY the file's complete contents — no explanations, no commentary, and no markdown code fences. "
+    "IF AND ONLY IF the app genuinely needs AI (generating or rewriting text, answering questions, "
+    "summarising, classifying, etc.), do NOT hardcode an external API or key: call Marshal's built-in AI "
+    "from the browser by POSTing same-origin to /api/ai with JSON body {\"prompt\": \"...\"} (optionally "
+    "{\"system\": \"...\"}) and reading the JSON reply's `text` field. It runs on the user's connected "
+    "Foundry models with no key in the page. Make the call async, show a loading state, and degrade "
+    "gracefully with a friendly message if the request fails (for example when opened without the Marshal "
+    "server). For apps that need no AI, add nothing of the sort."
+)
+
+APP_AI_SYSTEM = (
+    "You are an AI feature embedded inside a small web app the user built with Marshal. Answer the app's "
+    "request directly and usefully. Return plain text unless the request asks for a specific format. Keep "
+    "it concise and do not add meta commentary about being an AI."
 )
 
 
@@ -1322,6 +1335,38 @@ def draft_code(req: dict) -> dict:
         return {"code": _strip_fences(reply.text)}
     except Exception as exc:
         return {"code": "", "error": f"{type(exc).__name__}: {exc}"}
+
+
+_AI_CORS = {"Access-Control-Allow-Origin": "*", "Access-Control-Allow-Methods": "POST, OPTIONS",
+            "Access-Control-Allow-Headers": "Content-Type"}
+
+
+@app.options("/api/ai")
+def app_ai_preflight() -> Response:
+    """CORS preflight so apps in the sandboxed (opaque-origin) in-app Preview can call /api/ai."""
+    return Response(status_code=204, headers=_AI_CORS)
+
+
+@app.post("/api/ai")
+def app_ai(req: dict) -> JSONResponse:
+    """AI proxy for apps Marshal builds: they call this same-origin and it runs on Marshal's Foundry
+    models, so a generated app gets real AI with no API key in its code. Prompt length is bounded so a
+    served app cannot run unbounded spend. CORS-open so the sandboxed Preview can use it too. Returns
+    {ok, text}."""
+    prompt = (req.get("prompt") or "").strip()[:6000]
+    if not prompt:
+        return JSONResponse({"ok": False, "error": "A prompt is required."}, headers=_AI_CORS)
+    # The helper agent is created once per name, so a per-request system prompt would be ignored after
+    # the first call. Fold the app's instructions into the user message so they take effect every time.
+    app_system = (req.get("system") or "").strip()[:2000]
+    full = (app_system + "\n\n---\n\n" + prompt) if app_system else prompt
+    try:
+        reply = _helper_reply("marshal-app-ai", APP_AI_SYSTEM, full, req.get("model"))
+        return JSONResponse({"ok": True, "text": reply.text,
+                             "input_tokens": reply.input_tokens, "output_tokens": reply.output_tokens},
+                            headers=_AI_CORS)
+    except Exception as exc:
+        return JSONResponse({"ok": False, "error": f"{type(exc).__name__}: {exc}"}, headers=_AI_CORS)
 
 
 PLAN_SYSTEM = (
