@@ -60,6 +60,11 @@ def get_config() -> dict:
         "search_endpoint": settings.search_endpoint,
         "knowledge_base": settings.knowledge_base,
         "foundry_iq_configured": bool(settings.search_endpoint and settings.knowledge_base),
+        "foundry_iq": {
+            "configured": bool(settings.search_endpoint and settings.knowledge_base),
+            "search_endpoint": settings.search_endpoint,
+            "knowledge_base": settings.knowledge_base,
+        },
         "model_source": settings.model_source,
         "subagents_enabled": bool(settings.subagents_enabled),
         "ai_can_spawn_subagents": bool(settings.ai_can_spawn_subagents),
@@ -159,6 +164,120 @@ def connect(req: dict) -> dict:
         "search_endpoint": settings.search_endpoint, "knowledge_base": settings.knowledge_base,
     })
     return {"ok": True, "models": models, "worker_model": worker}
+
+
+def _foundry_iq_probe(endpoint: str, knowledge_base: str, query: str = "test", top_k: int = 3) -> dict:
+    """Build a Foundry IQ grounding and run one retrieval. Classify failures clearly.
+
+    stage is one of: 'sdk' (preview package not installed), 'client' (auth / endpoint /
+    KB name), 'retrieve' (query ran but the service errored), 'empty' (ran, no passages).
+    """
+    try:
+        from .grounding import FoundryIQGrounding
+    except Exception as exc:
+        return {"ok": False, "stage": "import", "error": f"{type(exc).__name__}: {exc}"}
+
+    try:
+        g = FoundryIQGrounding(endpoint, knowledge_base)
+    except ModuleNotFoundError:
+        return {
+            "ok": False, "stage": "sdk",
+            "error": "The Foundry IQ SDK is not installed.",
+            "hint": "Install the preview package:  pip install --pre azure-search-documents",
+        }
+    except Exception as exc:
+        return {
+            "ok": False, "stage": "client",
+            "error": f"Could not connect to Azure AI Search: {type(exc).__name__}: {exc}",
+            "hint": "Check the Search endpoint URL and that you are signed in (az login). "
+                    "DefaultAzureCredential needs a logged-in identity with access to the service.",
+        }
+
+    try:
+        passages = g.retrieve(query, top_k=top_k)
+    except Exception as exc:
+        msg = str(exc)
+        hint = ("Confirm the knowledge base name exists on that Search service and that your "
+                "identity has the Search Index Data Reader role. Run az login if sign-in is stale.")
+        return {"ok": False, "stage": "retrieve",
+                "error": f"Retrieval failed: {type(exc).__name__}: {msg[:300]}", "hint": hint}
+
+    sample = [{"source": p.source, "text": (p.text or "")[:280]} for p in (passages or [])]
+    if not sample:
+        return {"ok": False, "stage": "empty",
+                "error": "Connected, but the knowledge base returned no passages for a test query.",
+                "hint": "The knowledge base is reachable but may be empty or still indexing. "
+                        "Add a knowledge source and let indexing finish, then test again."}
+    return {"ok": True, "sample": sample}
+
+
+@app.post("/foundry-iq/connect")
+def foundry_iq_connect(req: dict) -> dict:
+    """Set or clear the Foundry IQ knowledge base (Azure AI Search agentic retrieval).
+
+    Accepts search_endpoint + knowledge_base. By default it runs a live retrieval probe
+    so the user gets a real pass/fail before relying on grounding; pass validate=false to
+    save without probing. Sending both blank clears the configuration. No secrets stored:
+    auth is DefaultAzureCredential (az login).
+    """
+    from .config import save_runtime_config
+
+    endpoint = (req.get("search_endpoint") or "").strip()
+    kb = (req.get("knowledge_base") or "").strip()
+    validate = req.get("validate", True)
+
+    if not endpoint and not kb:
+        settings.search_endpoint = ""
+        settings.knowledge_base = ""
+        save_runtime_config({"search_endpoint": "", "knowledge_base": ""})
+        return {"ok": True, "cleared": True, "configured": False}
+
+    if not endpoint or not kb:
+        return {
+            "ok": False,
+            "error": "Both the Search endpoint and the knowledge base name are required.",
+            "hint": "Search endpoint looks like https://<service>.search.windows.net ; "
+                    "the knowledge base name is what you created in Foundry IQ.",
+        }
+    if not (endpoint.startswith("http://") or endpoint.startswith("https://")):
+        return {"ok": False,
+                "error": "The Search endpoint must be a URL like https://<service>.search.windows.net."}
+
+    probe = None
+    if validate:
+        probe = _foundry_iq_probe(endpoint, kb)
+        if not probe.get("ok"):
+            return {"ok": False, "error": probe.get("error"), "hint": probe.get("hint"),
+                    "stage": probe.get("stage")}
+
+    settings.search_endpoint = endpoint
+    settings.knowledge_base = kb
+    save_runtime_config({"search_endpoint": endpoint, "knowledge_base": kb})
+    out = {"ok": True, "configured": True,
+           "search_endpoint": endpoint, "knowledge_base": kb}
+    if probe:
+        out["sample"] = probe.get("sample")
+        out["validated"] = True
+    return out
+
+
+@app.post("/foundry-iq/test")
+def foundry_iq_test(req: dict) -> dict:
+    """Run one retrieval against the configured (or supplied) Foundry IQ knowledge base.
+
+    Returns the cited passages so the user can confirm grounding works end to end before
+    they trust an answer. Used by the Settings panel and the wizard 'Test' button.
+    """
+    endpoint = (req.get("search_endpoint") or settings.search_endpoint or "").strip()
+    kb = (req.get("knowledge_base") or settings.knowledge_base or "").strip()
+    query = (req.get("query") or "What is in this knowledge base?").strip()
+    if not (endpoint and kb):
+        return {"ok": False, "error": "Foundry IQ is not configured yet."}
+    probe = _foundry_iq_probe(endpoint, kb, query=query, top_k=int(req.get("top_k") or 3))
+    if not probe.get("ok"):
+        return {"ok": False, "error": probe.get("error"), "hint": probe.get("hint"),
+                "stage": probe.get("stage")}
+    return {"ok": True, "passages": probe.get("sample") or [], "label": "Foundry IQ"}
 
 
 # ===== GitHub (E) — token-based: list repos, read files, push changes. =====
