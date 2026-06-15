@@ -37,15 +37,29 @@ class SubResult:
 
 # -- small, honest helpers (no token cost) ---------------------------------
 def _extract_json(text: str) -> dict | None:
+    """Parse a JSON object (or a bare subtask list) out of a model reply, tolerantly."""
     if not text:
         return None
-    i, j = text.find("{"), text.rfind("}")
-    if i < 0 or j <= i:
-        return None
-    try:
-        return json.loads(text[i : j + 1])
-    except json.JSONDecodeError:
-        return None
+    s = text.strip()
+    if s.startswith("```"):  # tolerate an accidental ```json fence
+        s = s.strip("`")
+        if s[:4].lower() == "json":
+            s = s[4:]
+        s = s.strip()
+    candidates = [s]
+    i, j = s.find("{"), s.rfind("}")
+    if i >= 0 and j > i:
+        candidates.append(s[i : j + 1])
+    for c in candidates:
+        try:
+            data = json.loads(c)
+        except (json.JSONDecodeError, ValueError, TypeError):
+            continue
+        if isinstance(data, dict):
+            return data
+        if isinstance(data, list):
+            return {"subtasks": data}  # tolerate a bare top-level subtask list
+    return None
 
 
 def _looks_blank(text: str) -> bool:
@@ -149,7 +163,13 @@ class Marshal:
         pending = [r for r in results if (redo or not r.answer)]
         if not pending:
             return
-        parallel = max(1, gov.allot_workers(len(pending), settings.max_workers))
+        allot = gov.allot_workers(len(pending), settings.max_workers)
+        if allot <= 0:
+            # Budget exhausted: honour the governor's stop. Existing answers flow to
+            # synthesis, the one stage funded from the held-back reserve.
+            self.emit({"type": "degrade", "stage": "workers", "budget": gov.snapshot()})
+            return
+        parallel = max(1, allot)
         self.emit({"type": "workers_start", "count": len(pending), "parallel": parallel, "tier": gov.tier().value})
 
         def run_one(r: SubResult) -> None:
@@ -185,9 +205,14 @@ class Marshal:
             })
 
         with ThreadPoolExecutor(max_workers=parallel) as pool:
-            futures = [pool.submit(run_one, r) for r in pending]
-            for _ in as_completed(futures):
-                pass
+            futures = {pool.submit(run_one, r): r for r in pending}
+            for fut in as_completed(futures):
+                try:
+                    fut.result()
+                except Exception as exc:  # a worker that raised must not pass as a benign blank
+                    r = futures[fut]
+                    self.emit({"type": "worker_error", "id": r.id,
+                               "message": f"{type(exc).__name__}: {exc}"})
 
     def _grade(self, results: list[SubResult], gov: BudgetGovernor) -> None:
         for r in results:
@@ -210,9 +235,9 @@ class Marshal:
             reply = self.foundry.ask(self.names["critic"], prompt)
             gov.record("critic", settings.critic_model, reply.input_tokens, reply.output_tokens)
             verdict = _extract_json(reply.text) or {}
-            grade = str(verdict.get("grade", "strong")).lower()
+            grade = str(verdict.get("grade", "thin")).lower()
             if grade not in ("strong", "thin", "blank"):
-                grade = "strong"
+                grade = "thin"  # fail safe: an unparseable verdict is treated as weak, not passed
             r.grade = grade
             r.rescope = str(verdict.get("rescope", ""))
             self.emit({"type": "graded", "id": r.id, "grade": grade, "by": "critic", "budget": gov.snapshot()})

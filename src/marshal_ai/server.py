@@ -10,6 +10,7 @@ Run:  python -m uvicorn marshal_ai.server:app --app-dir src --port 8000
 from __future__ import annotations
 
 import asyncio
+import math
 import threading
 from pathlib import Path
 
@@ -51,7 +52,10 @@ def get_config() -> dict:
     out = {
         "connected": bool(settings.project_endpoint),
         "project_endpoint": settings.project_endpoint,
+        "orchestrator_model": settings.orchestrator_model,
         "worker_model": settings.worker_model,
+        "critic_model": settings.critic_model,
+        "synthesiser_model": settings.synthesiser_model,
         "search_endpoint": settings.search_endpoint,
         "knowledge_base": settings.knowledge_base,
         "foundry_iq_configured": bool(settings.search_endpoint and settings.knowledge_base),
@@ -254,6 +258,132 @@ def github_push(req: dict) -> dict:
         return {"ok": True, **res}
     except Exception as exc:
         return {"ok": False, "error": str(exc)}
+
+
+@app.post("/set-models")
+def set_models(req: dict) -> dict:
+    """Set the model deployment per agent role (orchestrator / worker / critic / synthesiser)."""
+    from .config import save_runtime_config
+
+    roles = ("orchestrator_model", "worker_model", "critic_model", "synthesiser_model")
+    updates = {}
+    for r in roles:
+        v = (req.get(r) or "").strip()
+        if v:
+            setattr(settings, r, v)
+            updates[r] = v
+    if updates:
+        save_runtime_config(updates)
+        global _FOUNDRY_HELPER, _HELPER_AGENTS  # noqa: F824
+        _FOUNDRY_HELPER = None
+        _HELPER_AGENTS = set()
+    return {"ok": True, "roles": {r: getattr(settings, r) for r in roles}}
+
+
+# ===== Marshal Workshop — self-upgrading capabilities. =====
+# A capability is a specialised agent Marshal designs for itself from a plain-language
+# description: a charter (system prompt) it can then run on demand. Stored in .marshal.json
+# (gitignored) and registered as a Foundry agent so it is usable the moment it is created.
+# Safe by construction: it generates agent *instructions*, never code that executes.
+WORKSHOP_SYSTEM = (
+    "You are Marshal's Workshop. From the user's description you design ONE new capability for "
+    "Marshal, a self-governing multi-agent reasoning assistant. A capability is a specialised "
+    "agent with a focused charter. Reply with STRICT JSON only, no prose, no code fences: "
+    '{"name": "kebab-case-id", "title": "Short Title", "description": "one sentence on what it does", '
+    '"charter": "the full system prompt for this capability, written in the second person, telling it '
+    'exactly how to behave and what to output", "example": "one example request it handles"}. '
+    "House style for the charter: British English, no em dashes, direct and practical."
+)
+
+
+def _capabilities() -> list:
+    try:
+        data = _json.loads(_GH_PATH.read_text(encoding="utf-8")) if _GH_PATH.exists() else {}
+        return data.get("capabilities") or []
+    except Exception:
+        return []
+
+
+def _save_capabilities(caps: list) -> None:
+    try:
+        data = _json.loads(_GH_PATH.read_text(encoding="utf-8")) if _GH_PATH.exists() else {}
+        data["capabilities"] = caps
+        _GH_PATH.write_text(_json.dumps(data, indent=2), encoding="utf-8")
+    except Exception:
+        pass
+
+
+@app.get("/workshop/list")
+def workshop_list() -> dict:
+    return {"capabilities": _capabilities()}
+
+
+@app.post("/workshop/create")
+def workshop_create(req: dict) -> dict:
+    """Marshal designs itself a new capability from a description, then registers it for use."""
+    desc = (req.get("prompt") or "").strip()
+    if not desc:
+        return {"ok": False, "error": "Describe the capability you want Marshal to have."}
+    from .loop import _extract_json
+
+    try:
+        reply = _helper_reply(
+            "marshal-workshop", WORKSHOP_SYSTEM,
+            f"Design a capability for this request:\n{desc}\n\nSTRICT JSON ONLY.", req.get("model"),
+        )
+        spec = _extract_json(reply.text) or {}
+    except Exception as exc:
+        return {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
+    raw = str(spec.get("name") or spec.get("title") or "capability")
+    safe = "".join(c if (c.isalnum() or c in "-_") else "-" for c in raw.lower().strip()).strip("-")[:48] or "capability"
+    cap = {
+        "name": safe,
+        "title": str(spec.get("title") or safe).strip(),
+        "description": str(spec.get("description") or "").strip(),
+        "charter": str(spec.get("charter") or "").strip(),
+        "example": str(spec.get("example") or "").strip(),
+    }
+    if not cap["charter"]:
+        return {"ok": False, "error": "Marshal could not design that capability. Try describing it differently."}
+    caps = [c for c in _capabilities() if c.get("name") != safe]
+    caps.append(cap)
+    _save_capabilities(caps)
+    try:  # best-effort registration; invoke also (re)creates the agent on demand
+        if settings.project_endpoint:
+            from .foundry import Foundry
+
+            global _FOUNDRY_HELPER
+            if _FOUNDRY_HELPER is None:
+                _FOUNDRY_HELPER = Foundry(settings.project_endpoint)
+            _FOUNDRY_HELPER.ensure_agent(f"marshal-skill-{safe}", settings.worker_model, cap["charter"])
+            _HELPER_AGENTS.add(f"marshal-skill-{safe}")
+    except Exception:
+        pass
+    return {"ok": True, "capability": cap}
+
+
+@app.post("/workshop/invoke")
+def workshop_invoke(req: dict) -> dict:
+    """Run a created capability on some input: Marshal using a skill it gave itself."""
+    name = (req.get("name") or "").strip()
+    user_input = (req.get("input") or "").strip()
+    cap = next((c for c in _capabilities() if c.get("name") == name), None)
+    if not cap:
+        return {"ok": False, "error": "Capability not found."}
+    if not user_input:
+        return {"ok": False, "error": "Enter something for the capability to work on."}
+    try:
+        reply = _helper_reply(f"marshal-skill-{name}", cap["charter"], user_input, req.get("model"))
+        return {"ok": True, "output": reply.text,
+                "input_tokens": reply.input_tokens, "output_tokens": reply.output_tokens}
+    except Exception as exc:
+        return {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
+
+
+@app.post("/workshop/delete")
+def workshop_delete(req: dict) -> dict:
+    _save_capabilities([c for c in _capabilities() if c.get("name") != (req.get("name") or "").strip()])
+    return {"ok": True}
 
 
 @app.get("/models")
@@ -655,7 +785,12 @@ async def ws(websocket: WebSocket) -> None:
         return
 
     question = (req.get("question") or "").strip()
-    budget = float(req.get("budget") or settings.budget_usd)
+    try:
+        budget = float(req.get("budget") or settings.budget_usd)
+    except (TypeError, ValueError):
+        budget = settings.budget_usd
+    if not math.isfinite(budget) or budget <= 0:
+        budget = settings.budget_usd
     mode = req.get("mode") or ("live" if settings.project_endpoint else "demo")
     model = req.get("model")
     knowledge = req.get("knowledge")

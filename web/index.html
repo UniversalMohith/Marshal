@@ -328,6 +328,7 @@
     <button class="rbtn" data-nav="projects" title="Projects">__I_folder__<span class="tip">Projects</span></button>
     <button class="rbtn" data-nav="models" title="Models">__I_layers__<span class="tip">Models</span></button>
     <button class="rbtn" data-nav="github" title="GitHub">__I_github__<span class="tip">GitHub</span></button>
+    <button class="rbtn" data-nav="workshop" title="Workshop">__I_spark__<span class="tip">Workshop</span></button>
     <div class="sep"></div>
     <div id="pins" style="display:flex;flex-direction:column;gap:6px;align-items:center;"></div>
     <div class="spacer"></div>
@@ -460,6 +461,7 @@ function render(){
   else if(store.view==='chat'){ title.innerHTML='Chat'; v.innerHTML=chatHTML(); wireChat(); if(!modelData) loadModels().then(()=>{ if(store.view==='chat') render(); }); }
   else if(store.view==='models'){ title.innerHTML='Models'; v.innerHTML=modelsHTML(); wireModels(); if(!modelData) loadModels().then(()=>{ if(store.view==='models') render(); }); }
   else if(store.view==='github'){ title.innerHTML='GitHub'; v.innerHTML=githubHTML(); wireGithub(); }
+  else if(store.view==='workshop'){ title.innerHTML='Marshal Workshop'; v.innerHTML=workshopHTML(); wireWorkshop(); if(!workshopCaps) loadWorkshop().then(()=>{ if(store.view==='workshop') render(); }); if(!modelData) loadModels().then(()=>{ if(store.view==='workshop') render(); }); }
   else if(store.view==='settings'){ title.innerHTML='Settings'; v.innerHTML=settingsHTML(); wireSettings(); if(!modelData) loadModels().then(()=>{ if(store.view==='settings') render(); }); if(!fcfg) loadFoundryConfig().then(()=>{ if(store.view==='settings') render(); }); }
 }
 
@@ -965,6 +967,78 @@ async function connectFoundry(){
     fcfg=null; modelData=null; await loadFoundryConfig(true); await loadModels(true); await loadConfig(); render();
   }catch(e){ uiInfo({title:'Could not connect', body:'Could not reach the backend.'}); }
 }
+
+// ===== Per-role models (each of Marshal's four agents can run a different deployment) =====
+function modelChoices(){
+  const out=[];
+  ((modelData&&modelData.foundry&&modelData.foundry.deployments)||[]).filter(d=>d.kind!=='embedding').forEach(d=> out.push({v:d.name, l:(d.model||d.name)+' · Foundry'}));
+  ((modelData&&modelData.ollama&&modelData.ollama.models)||[]).forEach(m=> out.push({v:m, l:m+' · Ollama'}));
+  return out;
+}
+function roleModelsPanelHTML(){
+  if(!fcfg || !fcfg.connected) return `<div class="panel"><h2>Per-role models</h2><p class="h">Connect Microsoft Foundry first, then give each of Marshal's four agents its own model.</p></div>`;
+  const choices=modelChoices();
+  const ROLES=[['orchestrator_model','Orchestrator','decomposes the question into sub-tasks'],['worker_model','Worker','solves each sub-task in parallel'],['critic_model','Critic','grades answers and drives self-correction'],['synthesiser_model','Synthesiser','fuses the graded answers into the final answer']];
+  const rows=ROLES.map(function(r){
+    const key=r[0], cur=(fcfg&&fcfg[key])||'';
+    const has=choices.some(c=>c.v===cur);
+    const opts=(has?'':`<option value="${esc(cur)}" selected>${esc(cur||'—')} (current)</option>`)+choices.map(c=>`<option value="${esc(c.v)}" ${c.v===cur?'selected':''}>${esc(c.l)}</option>`).join('');
+    return `<div class="row"><div><strong>${r[1]}</strong><div class="muted" style="font-size:12px">${r[2]}</div></div><select data-role="${key}">${opts}</select></div>`;
+  }).join('');
+  return `<div class="panel"><h2>Per-role models</h2><p class="h">Marshal runs four agents. Give each its own model, for example a stronger critic with cheaper workers. Options are your Foundry deployments and any local Ollama models.</p>
+    ${rows}
+    <div class="row" style="border-top:0;padding-top:10px;justify-content:space-between;gap:8px"><button class="btn sm ghost" id="s-roles-same">Match all to Worker</button><button class="btn sm" id="s-roles-save">Save role models</button></div></div>`;
+}
+
+// ===== Marshal Workshop (self-upgrading: Marshal designs itself new capabilities) =====
+let workshopCaps=null;
+async function loadWorkshop(force){
+  if(workshopCaps && !force) return workshopCaps;
+  try{ const r=await fetch('/workshop/list'); const d=await r.json(); workshopCaps=d.capabilities||[]; }catch(e){ workshopCaps=[]; }
+  return workshopCaps;
+}
+function workshopHTML(){
+  const caps=workshopCaps||[];
+  const list = caps.length ? caps.map(workshopCard).join('') : `<div class="empty"><div class="eicon">${I.spark}</div><h3>No capabilities yet</h3><p>Describe something you wish Marshal could do. It designs itself a new specialised agent for it, on the spot.</p></div>`;
+  return `<div class="settings-wrap">
+    <div class="panel"><h2>Marshal Workshop</h2><p class="h">Marshal is self-upgrading. Describe a capability it does not have yet, and it designs itself a new specialised agent for it, running on your Foundry models. The new skill is saved and ready to use straight away.</p>
+      <textarea id="ws-prompt" placeholder="e.g. Turn a messy paragraph into a clean bulleted summary. Or: review a SQL query for performance issues. Or: draft a polite decline email from a few notes." style="width:100%;min-height:84px"></textarea>
+      <div class="row" style="border-top:0;padding-top:10px;justify-content:flex-end"><button class="btn" id="ws-build">${I.spark} Build capability</button></div></div>
+    <div class="section-h"><h2>Capabilities <span class="pill">${caps.length}</span></h2></div>
+    ${list}</div>`;
+}
+function workshopCard(c){
+  return `<div class="panel"><div class="row" style="border-top:0;padding:0 0 4px;align-items:flex-start">
+      <div style="flex:1;min-width:0"><h2 style="margin:0">${esc(c.title||c.name)}</h2><p class="h" style="margin:6px 0 0">${esc(c.description||'')}</p></div>
+      <button class="iconbtn" data-ws-del="${esc(c.name)}" title="Remove">${I.trash}</button></div>
+    <textarea data-ws-in="${esc(c.name)}" placeholder="${esc(c.example||'Give it something to work on…')}" style="width:100%;min-height:60px;margin-top:8px"></textarea>
+    <div class="row" style="border-top:0;padding-top:8px;justify-content:flex-end"><button class="btn sm" data-ws-run="${esc(c.name)}">Run capability</button></div>
+    <div data-ws-out="${esc(c.name)}"></div></div>`;
+}
+function wireWorkshop(){
+  const build=$('ws-build');
+  if(build) build.onclick=async function(){
+    const p=($('ws-prompt').value||'').trim(); if(!p){ toast('Describe a capability first.'); return; }
+    build.textContent='Building…'; build.disabled=true;
+    try{ const r=await fetch('/workshop/create',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({prompt:p})}); const d=await r.json();
+      if(d.ok){ toast('Marshal built: '+(d.capability.title||d.capability.name)); workshopCaps=null; await loadWorkshop(true); render(); }
+      else { uiInfo({title:'Could not build it', body:d.error||'Try describing it differently.'}); build.innerHTML=I.spark+' Build capability'; build.disabled=false; } }
+    catch(e){ toast('Backend unreachable.'); build.innerHTML=I.spark+' Build capability'; build.disabled=false; }
+  };
+  document.querySelectorAll('[data-ws-run]').forEach(function(b){ b.onclick=async function(){
+    const name=b.dataset.wsRun, inEl=document.querySelector('[data-ws-in="'+CSS.escape(name)+'"]'), out=document.querySelector('[data-ws-out="'+CSS.escape(name)+'"]');
+    const input=((inEl&&inEl.value)||'').trim(); if(!input){ toast('Enter something to run.'); return; }
+    b.textContent='Running…'; b.disabled=true; out.innerHTML='<div class="muted" style="padding:10px 0">Marshal is working…</div>';
+    try{ const r=await fetch('/workshop/invoke',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name:name,input:input})}); const d=await r.json();
+      out.innerHTML = d.ok ? `<div class="panel" style="margin:10px 0 0;background:var(--surface2)"><div class="muted" style="font-size:11px;text-transform:uppercase;letter-spacing:.5px;margin-bottom:6px">Output</div><div style="white-space:pre-wrap;line-height:1.55">${esc(d.output||'')}</div></div>` : `<div class="muted" style="color:#e0607e;padding:10px 0">${esc(d.error||'Failed.')}</div>`; }
+    catch(e){ out.innerHTML='<div class="muted" style="color:#e0607e;padding:10px 0">Backend unreachable.</div>'; }
+    b.textContent='Run capability'; b.disabled=false;
+  }; });
+  document.querySelectorAll('[data-ws-del]').forEach(function(b){ b.onclick=async function(){
+    await fetch('/workshop/delete',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name:b.dataset.wsDel})}); workshopCaps=null; await loadWorkshop(true); toast('Capability removed.'); render();
+  }; });
+}
+
 function settingsHTML(){
   return `<div class="settings-wrap"><div class="panel"><h2>Appearance</h2><p class="h">Pick a theme. The toggle in the sidebar flips light/dark.</p>
       <div class="row"><div>Theme</div><select id="s-theme">${THEMES.map(t=>`<option value="${t[0]}" ${store.theme===t[0]?'selected':''}>${t[1]}</option>`).join('')}</select></div></div>
@@ -973,6 +1047,7 @@ function settingsHTML(){
       <div class="row"><div>Project endpoint</div><div class="muted" style="font-size:12px;max-width:62%;text-align:right;word-break:break-all">${esc((fcfg&&fcfg.project_endpoint)||'not connected')}</div></div>
       <div class="row"><div>Reasoning model</div><div style="text-align:right;font-size:13px">${esc((fcfg&&fcfg.worker_model)||activeFoundryModel()||'—')}</div></div>
       <div class="row" style="border-top:0;padding-top:0;justify-content:flex-end;gap:8px"><button class="btn sm ghost" onclick="nav('models')">Open Models</button><button class="btn sm" id="s-connect">${(fcfg&&fcfg.connected)?'Change connection':'Connect Foundry'}</button></div></div>
+    ${roleModelsPanelHTML()}
     <div class="panel"><h2>Marshal learns you</h2><p class="h">Marshal keeps a master file of how you like to work and adapts to it. It fills in as you go, and you can edit it directly.</p>
       <div class="row"><div class="muted">Learned so far</div><div style="text-align:right;font-size:13px">theme <strong>${esc(store.theme)}</strong> · Microsoft Foundry${activeFoundryModel()?' · '+esc(activeFoundryModel()):''}</div></div>
       <div style="padding:12px 0"><label for="s-notes">Master file: what Marshal remembers about you</label>
@@ -988,6 +1063,15 @@ function wireSettings(){
   const md=$('s-notes-md'); if(md) md.onclick=()=>{ store.profileNotes=$('s-notes').value; save('marshal-notes',store.profileNotes); downloadMasterFile(); };
   const su=$('s-setup'); if(su) su.onclick=()=>openWizard();
   const sc=$('s-connect'); if(sc) sc.onclick=()=>connectFoundry();
+  const rsave=$('s-roles-save'); if(rsave) rsave.onclick=async()=>{
+    const body={}; document.querySelectorAll('[data-role]').forEach(s=> body[s.dataset.role]=s.value);
+    rsave.textContent='Saving…'; rsave.disabled=true;
+    try{ const r=await fetch('/set-models',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)}); const d=await r.json();
+      if(d.ok){ fcfg=null; await loadFoundryConfig(true); toast('Role models saved.'); render(); }
+      else { toast('Could not save role models.'); rsave.textContent='Save role models'; rsave.disabled=false; } }
+    catch(e){ toast('Backend unreachable.'); rsave.textContent='Save role models'; rsave.disabled=false; }
+  };
+  const rsame=$('s-roles-same'); if(rsame) rsame.onclick=()=>{ const w=document.querySelector('[data-role="worker_model"]'); if(!w) return; document.querySelectorAll('[data-role]').forEach(s=> s.value=w.value); toast('Set all roles to '+w.value+'. Save to apply.'); };
 }
 function downloadMasterFile(){
   const body = (store.profileNotes||'').trim() || '(empty, Marshal has not learned anything yet)';
@@ -1226,7 +1310,7 @@ async function githubPushCard(p, t){
 
 // ===== Onboarding wizard (first-run; re-runnable from Settings) =====
 const WIZ_PROMPT = "I'm setting up a new AI workspace called Marshal and want to bring over what you already know about me. Summarise, as concise markdown bullets: who I am and my role; my domains and expertise; how I like to communicate and receive answers; the projects and topics I'm working on; the tools and stacks I use; and any standing preferences I've given you. Be specific and factual; omit anything you're unsure about.";
-const WIZ_N = 4;
+const WIZ_N = 5;
 // The diagonal is a real transparent cut (SVG mask), not a coloured line, so the mark
 // sits cleanly on any background — rail, chat, planner — instead of only on --elevated.
 function WMARK(){ const g='wmg'+uid(), m='wmm'+uid(); return '<svg viewBox="0 0 120 120"><defs><linearGradient id="'+g+'" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="var(--logo-1)"/><stop offset="0.5" stop-color="var(--logo-2)"/><stop offset="1" stop-color="var(--logo-3)"/></linearGradient><mask id="'+m+'"><rect width="120" height="120" fill="black"/><path d="M26 94 L26 32 L60 60 L94 32 L94 94" fill="none" stroke="white" stroke-width="17" stroke-linejoin="round" stroke-linecap="round"/><line x1="98" y1="26" x2="28" y2="100" stroke="black" stroke-width="27" stroke-linecap="round"/></mask></defs><rect width="120" height="120" fill="url(#'+g+')" mask="url(#'+m+')"/><polygon points="93.28,21.54 102.72,30.46 32.72,104.46 23.28,95.54" fill="url(#'+g+')"/></svg>'; }
@@ -1247,12 +1331,20 @@ function renderWizard(){
         <div class="wiz-feature">${I.layers}Runs on Microsoft Foundry, with the live model shown</div></div>
       <div class="wiz-foot"><button class="wiz-skip" data-w="skipall">Skip setup</button><div class="right"><button class="btn" data-w="next">Get started</button></div></div>`;
   } else if(wizStep===1){
-    b=`<div style="display:flex;align-items:center;gap:10px;margin-bottom:6px"><span style="display:grid;place-items:center;color:var(--ink);width:24px;height:24px">${I.github}</span><h3 class="wt" style="margin:0">Connect GitHub</h3></div>
-      <p class="wd">Link a repository so you can pull your code in and open it in github.dev or Codespaces. Optional, and you can change it later.</p>
-      <div style="display:flex;gap:8px;margin-bottom:12px"><input id="wiz-repo" type="text" placeholder="owner / repo  (e.g. octocat/hello-world)" value="${esc(store.repo||'')}" style="flex:1"><button class="btn ghost sm" id="wiz-repo-save">Link repo</button></div>
-      <div class="muted" style="font-size:12px">We store the repo name for now; full sign-in to read your files comes later.</div>
+    b=`<div style="display:flex;align-items:center;gap:10px;margin-bottom:6px"><span style="display:grid;place-items:center;color:var(--ink);width:24px;height:24px">${I.layers}</span><h3 class="wt" style="margin:0">Microsoft Foundry</h3></div>
+      <p class="wd">Marshal's reasoning runs on <strong>your</strong> Foundry project. Sign in with <code>az login</code>, deploy a model in the portal, then paste your endpoint below. Your <strong>model library populates automatically</strong> from whatever you have deployed there, no hardcoded list, and you can assign one per agent role in Settings.</p>
+      <div style="display:flex;gap:8px;margin-bottom:6px"><input id="wiz-ep" type="text" placeholder="https://<resource>.services.ai.azure.com/api/projects/<project>" value="${esc((fcfg&&fcfg.project_endpoint)||'')}" style="flex:1"><button class="btn ghost sm" id="wiz-connect">Connect</button></div>
+      <div class="muted" style="font-size:12px;margin-bottom:12px">Status: <span id="wiz-fstatus">${foundryStatusHTML()}</span></div>
+      <div class="muted" style="font-size:12px;border-top:1px solid var(--line);padding-top:10px"><strong>Prefer local?</strong> Marshal also detects <strong>Ollama</strong> models on <code>localhost:11434</code> (run <code>ollama pull llama3.1</code>); they appear next to Foundry in Models. Foundry stays the primary backend.</div>
       ${wizFoot()}`;
   } else if(wizStep===2){
+    b=`<div style="display:flex;align-items:center;gap:10px;margin-bottom:6px"><span style="display:grid;place-items:center;color:var(--ink);width:24px;height:24px">${I.github}</span><h3 class="wt" style="margin:0">Connect GitHub</h3></div>
+      <p class="wd">Connect a fine-grained token so Marshal can <strong>pull</strong> your repos and files in, and <strong>push</strong> changes back as a ready-to-merge branch. The token stays on the local server, never shown to the browser or committed.</p>
+      <div style="display:flex;gap:8px;margin-bottom:6px"><input id="wiz-pat" type="password" placeholder="github_pat_…  (Contents: Read and write)" style="flex:1"><button class="btn ghost sm" id="wiz-pat-go">Connect</button></div>
+      <div class="muted" style="font-size:12px;margin-bottom:12px">Status: <span id="wiz-ghstatus">${(ghState&&ghState.connected)?("connected as "+esc(ghState.login||"")):"not connected"}</span></div>
+      <div style="display:flex;gap:8px;margin-bottom:8px"><input id="wiz-repo" type="text" placeholder="owner / repo  (optional default)" value="${esc(store.repo||'')}" style="flex:1"><button class="btn ghost sm" id="wiz-repo-save">Link repo</button></div>
+      ${wizFoot()}`;
+  } else if(wizStep===3){
     const chips=wizSources.map(s=>`<span class="wiz-chip">${I.check}${esc(s)}</span>`).join('');
     b=`<h3 class="wt">Bring your context</h3><p class="wd">Paste this into any AI you already use, then paste its reply back. Do it for as many as you like, the more the better.</p>
       <div class="wiz-prompt"><button class="btn ghost sm" id="wiz-copy" style="position:absolute;top:9px;right:9px;padding:4px 9px;font-size:11.5px">Copy</button><div style="max-width:86%">${esc(WIZ_PROMPT)}</div></div>
@@ -1275,6 +1367,8 @@ function renderWizard(){
   const rs=$('wiz-repo-save'); if(rs) rs.onclick=()=>{ store.repo=$('wiz-repo').value.trim(); save('marshal-repo',store.repo); toast(store.repo?('Linked '+store.repo):'Repo cleared.'); };
   const cp=$('wiz-copy'); if(cp) cp.onclick=()=>{ try{ navigator.clipboard.writeText(WIZ_PROMPT); }catch(e){} cp.textContent='Copied'; setTimeout(()=>{cp.textContent='Copy';},1200); };
   const add=$('wiz-add'); if(add) add.onclick=()=>{ const src=$('wiz-src').value, txt=$('wiz-ctx').value.trim(); if(!txt){ toast("Paste your AI's reply first."); return; } store.profileNotes=((store.profileNotes?store.profileNotes.trim()+'\n\n':'')+'## From '+src+'\n'+txt).slice(0,8000); save('marshal-notes',store.profileNotes); if(!wizSources.includes(src)) wizSources.push(src); renderWizard(); toast('Added context from '+src+'.'); };
+  const wc=$('wiz-connect'); if(wc) wc.onclick=async()=>{ const ep=($('wiz-ep').value||'').trim(); if(!ep){ toast('Paste your project endpoint.'); return; } const ss=$('wiz-fstatus'); if(ss) ss.textContent='connecting…'; wc.disabled=true; try{ const r=await fetch('/connect',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({project_endpoint:ep})}); const d=await r.json(); if(d.ok){ fcfg=null; modelData=null; await loadFoundryConfig(true); toast('Foundry connected. '+((d.models||[]).length)+' model(s).'); renderWizard(); } else { if(ss) ss.textContent=(d.error||'failed'); wc.disabled=false; } }catch(e){ if(ss) ss.textContent='backend unreachable'; wc.disabled=false; } };
+  const pg=$('wiz-pat-go'); if(pg) pg.onclick=async()=>{ const tok=($('wiz-pat').value||'').trim(); if(!tok){ toast('Paste a token.'); return; } const ss=$('wiz-ghstatus'); if(ss) ss.textContent='connecting…'; pg.disabled=true; try{ const r=await fetch('/github/connect',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({token:tok})}); const d=await r.json(); if(d.ok){ ghState=null; await loadGithubStatus(true); toast('GitHub connected as '+(d.login||'')); renderWizard(); } else { if(ss) ss.textContent=(d.error||'failed'); pg.disabled=false; } }catch(e){ if(ss) ss.textContent='backend unreachable'; pg.disabled=false; } };
   keepFocusIn($('wizard'));
 }
 
