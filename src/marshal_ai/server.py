@@ -1152,9 +1152,14 @@ def _learn_from_chat(message: str, reply_text: str, model: str | None) -> None:
 
 FILES_SYSTEM = (
     "You are a senior engineer planning a code change. Given a task, list the files most likely to "
-    "need creating or changing to complete it. Prefer realistic, conventional paths for the stack implied "
-    'by the task. Reply with STRICT JSON only: {"files": [{"path": "...", "why": "short reason"}]}. '
-    "Between 3 and 6 files. No prose outside the JSON."
+    "need creating or changing to complete it. IMPORTANT: each file is later drafted independently and "
+    "must be self-contained, so prefer the SMALLEST coherent set of files and do not split tightly "
+    "coupled code across files. For a simple static site or a small page, a single self-contained "
+    "index.html (inline CSS and JS, no external files) is ideal, suggest just that. Only propose a "
+    "multi-file structure when the task genuinely needs one, and do not assume a server framework "
+    "unless the task names a stack. "
+    'Reply with STRICT JSON only: {"files": [{"path": "...", "why": "short reason"}]}. '
+    "Between 1 and 5 files, the fewest that do the job. No prose outside the JSON."
 )
 
 
