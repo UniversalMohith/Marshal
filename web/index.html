@@ -251,6 +251,7 @@
   .scrim.open{display:flex;}
   .modal{background:var(--elevated);border:1px solid var(--line);border-radius:16px;width:min(520px,92vw);padding:20px;}
   .modal.wide{width:min(900px,95vw);}
+  .modal.huge{width:min(1240px,96vw);}
   .modal h3{margin:0 0 14px;}
   .field{margin-bottom:13px;}
   .field label{display:block;font-size:12px;text-transform:uppercase;letter-spacing:.5px;color:var(--muted);margin-bottom:6px;}
@@ -382,6 +383,7 @@ const I = {
   windows:'<svg viewBox="0 0 24 24" fill="currentColor"><rect x="3" y="3" width="8" height="8" rx="1"/><rect x="13" y="3" width="8" height="8" rx="1"/><rect x="3" y="13" width="8" height="8" rx="1"/><rect x="13" y="13" width="8" height="8" rx="1"/></svg>',
   check:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12l5 5L20 7"/></svg>',
   users:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="9" cy="8" r="3.2"/><path d="M3.5 19a5.5 5.5 0 0 1 11 0"/><path d="M16 5.2a3.2 3.2 0 0 1 0 6"/><path d="M18 13.4a5.5 5.5 0 0 1 3 5.6"/></svg>',
+  play:'<svg viewBox="0 0 24 24" fill="currentColor" stroke="none"><path d="M7 5.5v13a1 1 0 0 0 1.54.84l10-6.5a1 1 0 0 0 0-1.68l-10-6.5A1 1 0 0 0 7 5.5z"/></svg>',
 };
 // Inject icons into the rail only (where the __I_x__ placeholders live), not the whole body,
 // so this never re-serialises live nodes or wipes listeners.
@@ -919,14 +921,18 @@ function langOf(path){
 function openFile(p,t,i){
   const f=(t.files||[])[i]; if(!f) return;
   $('modal').className='modal wide';
-  $('modal').innerHTML=`<h3 style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">${I.file}<span style="font-family:ui-monospace,Menlo,Consolas,monospace;font-size:14px">${esc(f.path)}</span><span class="pill">${esc(langOf(f.path))}</span><button type="button" class="btn ghost sm ai-suggest" id="c-ai" style="margin-left:auto">${I.spark} Draft with AI</button></h3>
+  const canPreview = /\.(html?|svg)$/i.test(f.path) || /^\s*<(!doctype|html|svg)/i.test(f.content||'');
+  $('modal').innerHTML=`<h3 style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">${I.file}<span style="font-family:ui-monospace,Menlo,Consolas,monospace;font-size:14px">${esc(f.path)}</span><span class="pill">${esc(langOf(f.path))}</span><span style="margin-left:auto;display:flex;gap:8px">${canPreview?`<button type="button" class="btn ghost sm" id="c-preview">${I.play} Preview</button>`:''}<button type="button" class="btn ghost sm ai-suggest" id="c-ai">${I.spark} Draft with AI</button></span></h3>
     <textarea id="c-code" class="code-edit" spellcheck="false" placeholder="// ${esc(f.path)} : write or paste code here">${esc(f.content||'')}</textarea>
-    <p class="muted" style="font-size:12px;margin:8px 2px 0">Scratch / AI-draft surface. For real edits to repo code, open it in GitHub’s editor.</p>
-    <div class="modal-foot">${repoLinks()?`<a class="btn ghost sm" href="${repoLinks().dev}" target="_blank" rel="noopener" style="margin-right:auto">${I.github} Edit in github.dev</a>`:''}<button class="btn ghost sm" id="c-back">Back to card</button><button class="btn sm" id="c-save">Save code</button></div>`;
+    <p class="muted" style="font-size:12px;margin:8px 2px 0">Scratch / AI-draft surface. ${canPreview?'Hit Preview to run it live, in a sandbox, inside Marshal.':'For real edits to repo code, open it in GitHub’s editor.'}</p>
+    <div class="modal-foot">${repoLinks()?`<a class="btn ghost sm" href="${repoLinks().dev}" target="_blank" rel="noopener" style="margin-right:auto">${I.github} Edit in github.dev</a>`:''}<button class="btn ghost sm" id="c-back">Back to card</button>${canPreview?`<button class="btn ghost sm" id="c-preview2">${I.play} Preview</button>`:''}<button class="btn sm" id="c-save">Save code</button></div>`;
   const _wo=$('scrim').classList.contains('open'); $('scrim').classList.add('open'); afterModalOpen(_wo);
   const ta=$('c-code');
   if(ta){ ta.focus(); ta.addEventListener('keydown',e=>{ if(e.key==='Tab'){ e.preventDefault(); const s=ta.selectionStart, en=ta.selectionEnd; ta.value=ta.value.slice(0,s)+'  '+ta.value.slice(en); ta.selectionStart=ta.selectionEnd=s+2; } }); }
   $('c-back').onclick=()=>openCard(p,t);
+  const openPreview=()=>{ const code=$('c-code').value; if(!(code||'').trim()){ toast('Nothing to preview yet. Draft or paste some code first.'); return; } previewHTML(code, ()=>{ openFile(p,t,i); const ta2=$('c-code'); if(ta2) ta2.value=code; }); };
+  const pv1=$('c-preview'); if(pv1) pv1.onclick=openPreview;
+  const pv2=$('c-preview2'); if(pv2) pv2.onclick=openPreview;
   $('c-save').onclick=()=>{ f.content=$('c-code').value; persist(); toast('Saved '+f.path.split('/').pop()+'.'); openCard(p,t); };
   $('c-ai').onclick=async()=>{
     const btn=$('c-ai'); const old=btn.innerHTML; btn.disabled=true; btn.innerHTML=`${I.spark} Drafting…`;
@@ -939,6 +945,17 @@ function openFile(p,t,i){
     }catch(e){ toast('Could not reach the code drafter.'); }
     btn.disabled=false; btn.innerHTML=old;
   };
+}
+// Live, sandboxed preview of a self-contained web file (HTML/SVG). Renders inside Marshal via an
+// iframe srcdoc so a drafted app actually RUNS in-app, no copy-out, no external server.
+function previewHTML(code, onClose){
+  $('modal').className='modal huge';
+  $('modal').innerHTML=`<h3 style="display:flex;align-items:center;gap:8px;margin:0 0 12px">${I.play} Live preview<span class="muted" style="font-size:12px;font-weight:400">running in a sandbox, inside Marshal</span><span style="margin-left:auto;display:flex;gap:8px"><button class="btn ghost sm" id="pv-reload" title="Re-run">Reload</button><button class="btn sm" id="pv-close">Back to code</button></span></h3>
+    <div style="border:1px solid var(--line);border-radius:12px;overflow:hidden;background:#fff;height:76vh;box-shadow:0 14px 50px rgba(0,0,0,.4)"><iframe id="pv-frame" sandbox="allow-scripts allow-modals allow-popups allow-forms allow-pointer-lock" referrerpolicy="no-referrer" style="width:100%;height:100%;border:0;display:block;background:#fff"></iframe></div>`;
+  const wo=$('scrim').classList.contains('open'); $('scrim').classList.add('open'); afterModalOpen(wo);
+  const fr=$('pv-frame'); if(fr) fr.srcdoc=code;
+  const rl=$('pv-reload'); if(rl) rl.onclick=()=>{ if(fr) fr.srcdoc=code; };
+  $('pv-close').onclick=()=> onClose ? onClose() : closeModal();
 }
 function aiSuggestNotes(t,p){
   const title=(t.title||'this task'), tl=title.toLowerCase(); let kind='Implement';
